@@ -25,6 +25,11 @@ a{color:var(--brand);text-decoration:none}
 .tab{border:0;background:transparent;color:var(--muted);padding:8px 13px;border-radius:8px;font-weight:600}
 .tab:hover{background:var(--chip);color:var(--ink)}
 .tab.active{background:var(--brand);color:#fff}
+.tab-dd{position:relative}
+.dd-menu{position:absolute;top:calc(100% + 4px);left:0;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(16,24,40,.14);padding:6px;min-width:190px;z-index:40;display:none}
+.tab-dd.open .dd-menu{display:block}
+.dd-item{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--ink);padding:8px 12px;border-radius:7px;font-weight:600;cursor:pointer;white-space:nowrap}
+.dd-item:hover{background:var(--chip)}
 .wrap{max-width:1180px;margin:0 auto;padding:20px}
 
 /* stats */
@@ -152,12 +157,18 @@ td .sub{color:var(--muted);font-size:12px}
   <div class="brand"><span class="dot"></span>Учёт техники <span id="appver" style="font-weight:400;color:var(--muted);font-size:11px"></span></div>
   <nav class="tabs" id="tabs">
     <button class="tab active" data-view="dash">Обзор</button>
-    <button class="tab" data-view="equip">Техника</button>
-    <button class="tab" data-view="people">Сотрудники</button>
+    <div class="tab-dd" id="dd-ref">
+      <button class="tab" id="dd-ref-btn" type="button">Справочники ▾</button>
+      <div class="dd-menu" id="dd-ref-menu">
+        <button class="dd-item" data-view="equip">Техника</button>
+        <button class="dd-item" data-view="people">Сотрудники</button>
+        <button class="dd-item" data-view="sup">Поставщики</button>
+        <button class="dd-item" data-view="tsd">ТСД</button>
+        <button class="dd-item" data-view="prn">Принтеры</button>
+      </div>
+    </div>
     <button class="tab" data-view="acts">Акты</button>
     <button class="tab" data-view="cart">Картриджи</button>
-    <button class="tab" data-view="sup">Поставщики</button>
-    <button class="tab" data-view="tsd">ТСД</button>
     <button class="tab" data-view="users">Пользователи</button>
     <button class="tab" data-view="data">Данные</button>
     <button class="tab" data-view="about">О программе</button>
@@ -238,17 +249,16 @@ async function api(method,path,body){
   if(!r.ok){let msg='';try{msg=(await r.json()).detail;}catch(e){}throw new Error(msg||('Ошибка '+r.status));}
   const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text();
 }
-const TAB_PERM={dash:null,about:null,data:null,users:'admin',equip:'equip',people:'people',acts:'acts',cart:'cart',sup:'sup',tsd:'tsd'};
+const TAB_PERM={dash:null,about:null,data:null,users:'admin',equip:'equip',people:'people',acts:'acts',cart:'cart',prn:'cart',sup:'sup',tsd:'tsd'};
 function applyTabs(){
   const u=DB.user||{},admin=u.isAdmin,perms=u.perms||[];
-  document.querySelectorAll('.tab').forEach(t=>{
-    const need=TAB_PERM[t.dataset.view];
-    let show=true;
-    if(need==='admin')show=!!admin;else if(need)show=!!admin||perms.includes(need);
-    t.classList.toggle('hidden',!show);
-  });
-  const cur=document.querySelector('.tab[data-view="'+view+'"]');
-  if(cur&&cur.classList.contains('hidden'))view='dash';
+  const can=need=>!need?true:(need==='admin'?!!admin:(!!admin||perms.includes(need)));
+  document.querySelectorAll('.tab[data-view]').forEach(t=>t.classList.toggle('hidden',!can(TAB_PERM[t.dataset.view])));
+  let anyRef=false;
+  document.querySelectorAll('#dd-ref-menu .dd-item').forEach(it=>{const show=can(TAB_PERM[it.dataset.view]);it.classList.toggle('hidden',!show);if(show)anyRef=true;});
+  const dd=document.getElementById('dd-ref');if(dd)dd.classList.toggle('hidden',!anyRef);
+  const need=TAB_PERM[view];
+  if(need&&!can(need))view='dash';
 }
 async function reload(){DB=await api('GET','/api/state');paintUser();applyTabs();render();}
 
@@ -568,20 +578,23 @@ async function supplierDel(id){
 
 /* ===== CARTRIDGES view ===== */
 function viewCartridges(){
-  const printers=DB.printers||[];
   const carts=(DB.cartridges||[]).slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
   const low=carts.filter(c=>c.low).length;
   return `
-  <div class="card" style="margin-bottom:16px">
+  <div class="card">
     <div class="card-h">
       <h2>Картриджи <span class="tag">${carts.length}</span>${low?` <span class="badge b-writeoff">Ниже минимума: ${low}</span>`:''}</h2>
       <div class="toolbar"><button class="btn" id="cg-check">Проверить остатки</button><button class="btn primary" id="cg-add">+ Картридж</button></div>
     </div>
     <div class="tbl-scroll"><table>
       <thead><tr><th>Картридж</th><th>Принтер</th><th>Остаток</th><th>Мин.</th><th>Статус</th><th></th></tr></thead>
-      <tbody>${carts.map(rowCart).join('')||'<tr><td colspan="6" class="empty">Картриджей нет. Добавьте принтер и картридж.</td></tr>'}</tbody>
+      <tbody>${carts.map(rowCart).join('')||'<tr><td colspan="6" class="empty">Картриджей нет. Добавьте принтер (в «Справочники») и картридж.</td></tr>'}</tbody>
     </table></div>
-  </div>
+  </div>`;
+}
+function viewPrinters(){
+  const printers=(DB.printers||[]).slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+  return `
   <div class="card">
     <div class="card-h"><h2>Принтеры <span class="tag">${printers.length}</span></h2><div class="toolbar"><button class="btn primary" id="pr-add">+ Принтер</button></div></div>
     <div class="tbl-scroll"><table>
@@ -735,14 +748,18 @@ function viewData(){
 }
 
 /* ===== render ===== */
+const REF_SECTIONS=['equip','people','sup','tsd','prn'];
 function render(){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===view));
+  const ddb=document.getElementById('dd-ref-btn');if(ddb)ddb.classList.toggle('active',REF_SECTIONS.includes(view));
+  const dd=document.getElementById('dd-ref');if(dd)dd.classList.remove('open');
   const app=$('#app');
   if(view==='dash')app.innerHTML=viewDash();
   else if(view==='equip')app.innerHTML=viewEquip();
   else if(view==='people')app.innerHTML=viewPeople();
   else if(view==='acts')app.innerHTML=viewActs();
   else if(view==='cart')app.innerHTML=viewCartridges();
+  else if(view==='prn')app.innerHTML=viewPrinters();
   else if(view==='sup')app.innerHTML=viewSuppliers();
   else if(view==='tsd')app.innerHTML=viewTsd();
   else if(view==='users')app.innerHTML=viewUsers();
@@ -783,10 +800,12 @@ function bindView(){
   }
   if(view==='cart'){
     $('#cg-add').onclick=()=>cartModal(null);
-    $('#pr-add').onclick=()=>printerModal(null);
     $('#cg-check').onclick=async()=>{try{const r=await api('POST','/api/cartridges/check');await reload();toast(r.notified?('Отправлено уведомлений: '+r.notified):'Новых уведомлений нет (нет позиций ниже минимума или уже уведомлены)');}catch(e){errToast(e);}};
     document.querySelectorAll('[data-cact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.cact;
       if(a==='plus')cartStock(id,1);else if(a==='minus')cartStock(id,-1);else if(a==='cedit')cartModal(id);else if(a==='cdel')cartDel(id);});
+  }
+  if(view==='prn'){
+    $('#pr-add').onclick=()=>printerModal(null);
     document.querySelectorAll('[data-pact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.pact;
       if(a==='pedit')printerModal(id);else if(a==='pdel')printerDel(id);});
   }
@@ -1207,7 +1226,15 @@ function importJSON(ev){
 }
 
 /* ===== init ===== */
-document.getElementById('tabs').addEventListener('click',e=>{const b=e.target.closest('.tab');if(b){if(b.dataset.view==='users')USERS=null;view=b.dataset.view;render();}});
+document.getElementById('tabs').addEventListener('click',e=>{
+  const ddBtn=e.target.closest('#dd-ref-btn');
+  if(ddBtn){e.stopPropagation();document.getElementById('dd-ref').classList.toggle('open');return;}
+  const item=e.target.closest('.dd-item');
+  if(item){if(item.dataset.view==='users')USERS=null;view=item.dataset.view;render();return;}
+  const b=e.target.closest('.tab[data-view]');
+  if(b){if(b.dataset.view==='users')USERS=null;view=b.dataset.view;render();}
+});
+document.addEventListener('click',e=>{const dd=document.getElementById('dd-ref');if(dd&&!dd.contains(e.target))dd.classList.remove('open');});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeModal();const pa=$('#printArea');if(pa)pa.hidden=true;}});
 $('#lg-form').addEventListener('submit',e=>{e.preventDefault();doLogin();});
 boot();

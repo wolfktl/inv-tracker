@@ -38,7 +38,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 # ---------------------------------------------------------------- config
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 # Разделы, доступ к которым можно выдавать обычным пользователям.
 GRANTABLE_SECTIONS = ["equip", "people", "acts", "cart", "sup", "tsd"]
