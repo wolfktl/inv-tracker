@@ -7,6 +7,7 @@ from typing import Optional, List
 
 import barcode
 from barcode.writer import SVGWriter
+import pyotp
 
 RU_MONTHS = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
              "июля", "августа", "сентября", "октября", "ноября", "декабря"]
@@ -37,7 +38,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 # ---------------------------------------------------------------- config
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 BASE = pathlib.Path(__file__).parent
 DB_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg2://inv:inv@db:5432/inventory")
 SECRET_KEY = os.environ.get("SECRET_KEY", "change-me-please-" + secrets.token_hex(8))
@@ -61,6 +62,9 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     full_name: Mapped[str] = mapped_column(String(128), default="")
     role: Mapped[str] = mapped_column(String(32), default="admin")
+    totp_secret: Mapped[str] = mapped_column(String(64), default="")
+    totp_enabled: Mapped[int] = mapped_column(Integer, default=0)
+    recovery_codes: Mapped[Optional[list]] = mapped_column(JSONType, nullable=True)
 
 class Employee(Base):
     __tablename__ = "employees"
@@ -428,13 +432,91 @@ class LoginBody(BaseModel):
     username: str
     password: str
 
+def _user_info(u: User):
+    return {"username": u.username, "fullName": u.full_name, "role": u.role, "twofa": bool(u.totp_enabled)}
+
+def _verify_2fa(u: User, code: str) -> bool:
+    code = (code or "").strip().replace(" ", "").replace("-", "")
+    if not code:
+        return False
+    if u.totp_secret and pyotp.TOTP(u.totp_secret).verify(code, valid_window=1):
+        return True
+    codes = list(u.recovery_codes or [])           # одноразовые резервные коды
+    for h in codes:
+        if verify_pw(code, h):
+            codes.remove(h); u.recovery_codes = codes
+            return True
+    return False
+
 @app.post("/api/login")
 def login(body: LoginBody, request: Request, db: Session = Depends(get_db)):
     u = db.scalar(select(User).where(User.username == body.username))
     if not u or not verify_pw(body.password, u.password_hash):
         raise HTTPException(401, "Неверный логин или пароль")
+    if u.totp_enabled:
+        request.session.pop("uid", None)
+        request.session["pending_uid"] = u.id
+        return {"need2fa": True}
+    request.session.pop("pending_uid", None)
     request.session["uid"] = u.id
-    return {"username": u.username, "fullName": u.full_name, "role": u.role}
+    return _user_info(u)
+
+@app.post("/api/login/2fa")
+def login_2fa(body: dict, request: Request, db: Session = Depends(get_db)):
+    uid = request.session.get("pending_uid")
+    if not uid:
+        raise HTTPException(401, "Сессия входа истекла — войдите заново")
+    u = db.get(User, uid)
+    if not u or not u.totp_enabled:
+        raise HTTPException(401, "Требуется вход заново")
+    if not _verify_2fa(u, body.get("code", "")):
+        raise HTTPException(400, "Неверный код")
+    db.commit()                                     # фиксируем расход резервного кода
+    request.session.pop("pending_uid", None)
+    request.session["uid"] = u.id
+    return _user_info(u)
+
+# ---------- 2FA management
+@app.post("/api/2fa/setup")
+def twofa_setup(db: Session = Depends(get_db), u: User = Depends(current_user)):
+    if u.totp_enabled:
+        raise HTTPException(400, "2FA уже включена — сначала отключите")
+    u.totp_secret = pyotp.random_base32()
+    db.commit()
+    uri = pyotp.TOTP(u.totp_secret).provisioning_uri(name=u.username, issuer_name="Учёт техники")
+    return {"secret": u.totp_secret, "otpauth": uri}
+
+@app.get("/api/2fa/qr.svg")
+def twofa_qr(db: Session = Depends(get_db), u: User = Depends(current_user)):
+    if not u.totp_secret:
+        raise HTTPException(400, "Сначала запустите настройку")
+    import qrcode, qrcode.image.svg
+    uri = pyotp.TOTP(u.totp_secret).provisioning_uri(name=u.username, issuer_name="Учёт техники")
+    img = qrcode.make(uri, image_factory=qrcode.image.svg.SvgPathImage)
+    buf = io.BytesIO(); img.save(buf)
+    return Response(buf.getvalue(), media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+
+@app.post("/api/2fa/enable")
+def twofa_enable(body: dict, db: Session = Depends(get_db), u: User = Depends(current_user)):
+    if u.totp_enabled:
+        raise HTTPException(400, "2FA уже включена")
+    if not u.totp_secret:
+        raise HTTPException(400, "Сначала запустите настройку (setup)")
+    if not pyotp.TOTP(u.totp_secret).verify((body.get("code") or "").strip().replace(" ", ""), valid_window=1):
+        raise HTTPException(400, "Неверный код")
+    codes = [secrets.token_hex(4) for _ in range(10)]
+    u.recovery_codes = [hash_pw(c) for c in codes]
+    u.totp_enabled = 1
+    db.commit()
+    return {"recovery_codes": codes}
+
+@app.post("/api/2fa/disable")
+def twofa_disable(body: dict, db: Session = Depends(get_db), u: User = Depends(current_user)):
+    if not verify_pw(body.get("password", ""), u.password_hash):
+        raise HTTPException(400, "Неверный пароль")
+    u.totp_enabled = 0; u.totp_secret = ""; u.recovery_codes = []
+    db.commit()
+    return {"ok": True}
 
 @app.post("/api/logout")
 def logout(request: Request):
@@ -443,7 +525,7 @@ def logout(request: Request):
 
 @app.get("/api/me")
 def me(u: User = Depends(current_user)):
-    return {"username": u.username, "fullName": u.full_name, "role": u.role}
+    return _user_info(u)
 
 @app.post("/api/password")
 def change_password(body: dict, request: Request, db: Session = Depends(get_db), u: User = Depends(current_user)):
@@ -463,7 +545,7 @@ def state(db: Session = Depends(get_db), u: User = Depends(current_user)):
     return {
         "version": APP_VERSION,
         "org": org.value if org else DEFAULT_ORG,
-        "user": {"username": u.username, "fullName": u.full_name},
+        "user": _user_info(u),
         "employees": [emp_dict(e) for e in db.scalars(select(Employee)).all()],
         "equipment": [eq_dict(e) for e in db.scalars(select(Equipment)).all()],
         "acts": [act_dict(a) for a in db.scalars(select(Act)).all()],

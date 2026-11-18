@@ -168,11 +168,17 @@ td .sub{color:var(--muted);font-size:12px}
 <div class="login-ov" id="loginOverlay" hidden>
   <form class="login-card" id="lg-form">
     <h1><span class="dot"></span>Учёт техники</h1>
-    <p>Войдите, чтобы продолжить</p>
-    <div class="field"><label>Логин</label><input id="lg-user" autocomplete="username"></div>
-    <div class="field"><label>Пароль</label><input id="lg-pass" type="password" autocomplete="current-password"></div>
+    <div id="lg-step1">
+      <p>Войдите, чтобы продолжить</p>
+      <div class="field"><label>Логин</label><input id="lg-user" autocomplete="username"></div>
+      <div class="field"><label>Пароль</label><input id="lg-pass" type="password" autocomplete="current-password"></div>
+    </div>
+    <div id="lg-step2" class="hidden">
+      <p>Введите код из приложения-аутентификатора (или резервный код)</p>
+      <div class="field"><label>Код</label><input id="lg-code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"></div>
+    </div>
     <div class="login-err" id="lg-err"></div>
-    <button class="btn primary" type="submit" style="width:100%">Войти</button>
+    <button class="btn primary" type="submit" style="width:100%" id="lg-submit">Войти</button>
   </form>
 </div>
 <div id="modalRoot"></div>
@@ -234,22 +240,33 @@ async function api(method,path,body){
 async function reload(){DB=await api('GET','/api/state');paintUser();render();}
 
 /* ===== auth ===== */
-function showLogin(){$('#loginOverlay').hidden=false;setTimeout(()=>{const u=$('#lg-user');if(u)u.focus();},50);}
+let loginStep=1;
+function resetLogin(){loginStep=1;const s1=$('#lg-step1'),s2=$('#lg-step2'),sb=$('#lg-submit'),cd=$('#lg-code');if(s1)s1.classList.remove('hidden');if(s2)s2.classList.add('hidden');if(sb)sb.textContent='Войти';if(cd)cd.value='';}
+function showLogin(){resetLogin();$('#loginOverlay').hidden=false;setTimeout(()=>{const u=$('#lg-user');if(u)u.focus();},50);}
 function hideLogin(){$('#loginOverlay').hidden=true;}
 function paintUser(){
   const ver=$('#appver');if(ver&&DB.version)ver.textContent='v'+DB.version;
   const el=$('#userbox');if(!el)return;
+  const tf=DB.user&&DB.user.twofa;
   el.innerHTML=`<span class="uname">${esc(DB.user&&DB.user.fullName||DB.user&&DB.user.username||'')}</span>
+    <button class="btn sm ghost" id="u-2fa" title="Двухфакторная аутентификация">2FA${tf?' ✓':''}</button>
     <button class="btn sm ghost" id="u-pass">Пароль</button>
     <button class="btn sm ghost" id="u-logout">Выход</button>`;
   $('#u-logout').onclick=async()=>{await api('POST','/api/logout');location.reload();};
   $('#u-pass').onclick=passwordModal;
+  $('#u-2fa').onclick=twofaModal;
 }
 async function doLogin(){
-  const u=$('#lg-user').value.trim(),p=$('#lg-pass').value;
   const err=$('#lg-err');err.textContent='';
-  try{await api('POST','/api/login',{username:u,password:p});hideLogin();await reload();}
-  catch(e){err.textContent='Неверный логин или пароль';}
+  try{
+    if(loginStep===2){
+      await api('POST','/api/login/2fa',{code:$('#lg-code').value.trim()});
+      resetLogin();hideLogin();await reload();return;
+    }
+    const r=await api('POST','/api/login',{username:$('#lg-user').value.trim(),password:$('#lg-pass').value});
+    if(r&&r.need2fa){loginStep=2;$('#lg-step1').classList.add('hidden');$('#lg-step2').classList.remove('hidden');$('#lg-submit').textContent='Подтвердить';setTimeout(()=>{const el=$('#lg-code');if(el)el.focus();},50);return;}
+    resetLogin();hideLogin();await reload();
+  }catch(e){err.textContent=(loginStep===2)?'Неверный код':'Неверный логин или пароль';}
 }
 async function boot(){
   try{await api('GET','/api/me');hideLogin();await reload();}
@@ -948,6 +965,50 @@ function actModal(){
     if(!ids.length){toast('Отметьте хотя бы одну позицию');return;}
     try{const act=await api('POST','/api/acts',{kind:$('#a-kind').value,empId,itemIds:ids});closeModal();view='acts';await reload();printAct(act);}catch(e){errToast(e);}
   };
+}
+
+/* ===== 2FA ===== */
+function twofaModal(){
+  if(DB.user&&DB.user.twofa){
+    openModal(`<div class="modal-h"><h3>Двухфакторная аутентификация</h3></div>
+      <div class="modal-b">
+        <p style="margin-top:0"><span class="badge b-issued">Включена</span></p>
+        <p class="hint">Чтобы отключить 2FA, подтвердите паролем.</p>
+        <div class="field"><label>Пароль</label><input type="password" id="tf-pass"></div>
+      </div>
+      <div class="modal-f"><button class="btn ghost" id="m-cancel">Закрыть</button><button class="btn danger" id="m-save">Отключить 2FA</button></div>`);
+    $('#m-cancel').onclick=closeModal;
+    $('#m-save').onclick=async()=>{try{await api('POST','/api/2fa/disable',{password:$('#tf-pass').value});closeModal();await reload();toast('2FA отключена');}catch(e){errToast(e);}};
+    return;
+  }
+  twofaSetup();
+}
+async function twofaSetup(){
+  let data;
+  try{data=await api('POST','/api/2fa/setup');}catch(e){errToast(e);return;}
+  openModal(`<div class="modal-h"><h3>Включить 2FA</h3></div>
+    <div class="modal-b">
+      <p class="hint" style="margin-top:0">Отсканируйте QR в приложении-аутентификаторе (Google Authenticator, Authy, 1Password и т.п.) или введите ключ вручную, затем введите код для подтверждения.</p>
+      <div style="text-align:center;margin:10px 0"><img src="/api/2fa/qr.svg?t=${Date.now()}" alt="QR" style="width:188px;height:188px;background:#fff;padding:8px;border:1px solid var(--line);border-radius:8px"></div>
+      <div class="field"><label>Ключ (если QR не считывается)</label><input class="mono" value="${esc(data.secret)}" readonly onclick="this.select()"></div>
+      <div class="field"><label>Код из приложения</label><input id="tf-code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"></div>
+    </div>
+    <div class="modal-f"><button class="btn ghost" id="m-cancel">Отмена</button><button class="btn primary" id="m-save">Включить</button></div>`);
+  $('#m-cancel').onclick=closeModal;
+  $('#m-save').onclick=async()=>{
+    try{const r=await api('POST','/api/2fa/enable',{code:$('#tf-code').value.trim()});closeModal();await reload();showRecoveryCodes(r.recovery_codes||[]);}
+    catch(e){errToast(e);}
+  };
+}
+function showRecoveryCodes(codes){
+  openModal(`<div class="modal-h"><h3>2FA включена ✓</h3></div>
+    <div class="modal-b">
+      <p class="hint" style="margin-top:0;color:var(--red);font-weight:600">Сохраните резервные коды. Каждый можно использовать один раз, если потеряете доступ к приложению. Повторно они не показываются.</p>
+      <div class="checklist" style="padding:12px"><div class="mono" style="columns:2;line-height:2">${codes.map(c=>esc(c)).join('<br>')}</div></div>
+    </div>
+    <div class="modal-f"><button class="btn" id="m-copy">Скопировать</button><button class="btn primary" id="m-done">Готово</button></div>`);
+  $('#m-done').onclick=closeModal;
+  $('#m-copy').onclick=async()=>{try{await navigator.clipboard.writeText(codes.join('\n'));toast('Коды скопированы');}catch(_){toast('Скопируйте вручную');}};
 }
 
 /* ===== password ===== */

@@ -1,12 +1,14 @@
 # Учёт техники
 
-**Версия:** 1.1.0
+**Версия:** 1.2.0
 
 Небольшое веб-приложение для учёта ПК, ноутбуков, мониторов и прочей техники
 с привязкой к сотруднику и рабочему месту и печатью **акта приёма-передачи**.
 
 - **Backend:** FastAPI + PostgreSQL
-- **Авторизация:** вход по логину/паролю, сессия в подписанной cookie
+- **Авторизация:** вход по логину/паролю, сессия в подписанной cookie;
+  опциональная **2FA (TOTP)** — Google Authenticator / Authy и совместимые,
+  с резервными кодами
 - **Хранение:** PostgreSQL (том `pgdata`)
 - **UI:** одностраничный интерфейс, печать актов в PDF прямо из браузера
 
@@ -74,6 +76,14 @@ docker compose exec db pg_dump -U inv inventory > backup.sql
 
 Либо через интерфейс: вкладка **Данные → Экспорт JSON**.
 
+Если пользователь потерял доступ к 2FA (телефон и резервные коды), сбросить 2FA
+можно напрямую в БД:
+
+```bash
+docker compose exec db psql -U inv -d inventory \
+  -c "UPDATE users SET totp_enabled=0, totp_secret='', recovery_codes=NULL WHERE username='admin';"
+```
+
 ## Миграции схемы (Alembic)
 
 Схема БД управляется Alembic. **При каждом старте приложение само применяет
@@ -123,7 +133,9 @@ inv-tracker/
 
 | Метод | Путь | Назначение |
 |------|------|-----------|
-| POST | `/api/login` / `/api/logout` | вход / выход |
+| POST | `/api/login` / `/api/login/2fa` / `/api/logout` | вход (2-й шаг — код 2FA) / выход |
+| POST | `/api/2fa/setup` `/enable` `/disable` | настройка/включение/отключение 2FA |
+| GET  | `/api/2fa/qr.svg` | QR для привязки аутентификатора |
 | GET  | `/api/me`, `/api/state` | текущий пользователь, всё состояние |
 | GET/POST/PUT/DELETE | `/api/equipment[/{id}]` | техника |
 | POST | `/api/equipment/{id}/issue` `/return` | назначить (сотрудник/рабочее место) / вернуть |
