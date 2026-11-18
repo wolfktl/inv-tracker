@@ -37,6 +37,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 # ---------------------------------------------------------------- config
+APP_VERSION = "1.0.0"
 BASE = pathlib.Path(__file__).parent
 DB_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg2://inv:inv@db:5432/inventory")
 SECRET_KEY = os.environ.get("SECRET_KEY", "change-me-please-" + secrets.token_hex(8))
@@ -449,6 +450,7 @@ def change_password(body: dict, request: Request, db: Session = Depends(get_db),
 def state(db: Session = Depends(get_db), u: User = Depends(current_user)):
     org = db.get(Setting, "org")
     return {
+        "version": APP_VERSION,
         "org": org.value if org else DEFAULT_ORG,
         "user": {"username": u.username, "fullName": u.full_name},
         "employees": [emp_dict(e) for e in db.scalars(select(Employee)).all()],
@@ -1073,6 +1075,10 @@ def import_all(body: dict, db: Session = Depends(get_db), u: User = Depends(curr
     return {"ok": True}
 
 # ---------- static UI
+@app.get("/api/version")
+def version():
+    return {"version": APP_VERSION}
+
 @app.get("/")
 def index():
     return FileResponse(BASE / "static" / "index.html")
