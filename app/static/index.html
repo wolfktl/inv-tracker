@@ -156,6 +156,7 @@ td .sub{color:var(--muted);font-size:12px}
     <button class="tab" data-view="people">Сотрудники</button>
     <button class="tab" data-view="acts">Акты</button>
     <button class="tab" data-view="cart">Картриджи</button>
+    <button class="tab" data-view="sup">Поставщики</button>
     <button class="tab" data-view="data">Данные</button>
   </nav>
   <div class="userbox" id="userbox"></div>
@@ -194,12 +195,22 @@ const esc=s=>(s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt
 const empById=id=>DB.employees.find(e=>e.id===id);
 const eqById=id=>DB.equipment.find(e=>e.id===id);
 function holderLabel(eq){if(eq.empId){const e=empById(eq.empId);return e?e.fullName:eq.empId;}if(eq.assignType==='workplace'&&eq.workplace)return 'РМ: '+eq.workplace;return eq.holderText||'';}
+const supById=id=>(DB.suppliers||[]).find(s=>s.id===id);
+function _norm(s){return (s==null?'':String(s)).toLowerCase().replace(/ё/g,'е');}
+// потокенный поиск: все слова запроса должны встречаться (в любом порядке), ё=е
+function matchQuery(hay,q){const terms=_norm(q).split(/\s+/).filter(Boolean);if(!terms.length)return true;const h=_norm(hay);return terms.every(t=>h.includes(t));}
 function filteredEquip(){
   let list=DB.equipment.slice();
   if(fEquip.type)list=list.filter(e=>e.type===fEquip.type);
   if(fEquip.status)list=list.filter(e=>e.status===fEquip.status);
-  if(fEquip.q){const s=fEquip.q.toLowerCase();list=list.filter(e=>[e.name,e.invno,e.serial,holderLabel(e),e.workplace,e.location].join(' ').toLowerCase().includes(s));}
+  if(fEquip.q)list=list.filter(e=>matchQuery([e.name,e.innerName,e.invno,e.serial,holderLabel(e),e.workplace,e.location,(supById(e.supplierId)||{}).name].join(' '),fEquip.q));
   return list.sort((a,b)=>(a.type+a.name).localeCompare(b.type+b.name,'ru'));
+}
+// варианты <option> сотрудников с учётом поиска — для выбора в модалках
+function empOptionsHTML(selectedId,q){
+  let list=DB.employees.slice().sort((a,b)=>a.fullName.localeCompare(b.fullName,'ru'));
+  if(q)list=list.filter(p=>matchQuery([p.fullName,p.login,p.email].join(' '),q));
+  return '<option value="">— выберите —</option>'+list.map(p=>`<option value="${p.id}" ${selectedId===p.id?'selected':''}>${esc(p.fullName)}${p.login?' ('+esc(p.login)+')':''}</option>`).join('');
 }
 function devCount(empId){return DB.equipment.filter(e=>e.empId===empId).length;}
 function fmtDate(d){const x=d?new Date(d):new Date();return ('0'+x.getDate()).slice(-2)+'.'+('0'+(x.getMonth()+1)).slice(-2)+'.'+x.getFullYear();}
@@ -298,7 +309,7 @@ function rowEquip(e){
   const wp=(e.assignType!=='workplace'&&e.workplace)?`<div class="sub">${esc(e.workplace)}</div>`:'';
   return `<tr>
     <td><span class="tag">${esc(e.type)}</span></td>
-    <td>${esc(e.name)}${e.location?`<div class="sub">${esc(e.location)}</div>`:''}</td>
+    <td>${esc(e.name)}${e.innerName?`<div class="sub">${esc(e.innerName)}</div>`:''}${e.location?`<div class="sub">${esc(e.location)}</div>`:''}</td>
     <td class="mono">${esc(e.invno)||'—'}</td>
     <td class="mono hide-sm">${esc(e.serial)||'—'}</td>
     <td><span class="badge ${STATUS_CLS[e.status]}">${STATUS[e.status]}</span></td>
@@ -317,7 +328,7 @@ function rowEquip(e){
 /* ===== PEOPLE ===== */
 function viewPeople(){
   let list=DB.employees.slice();
-  if(fPeople){const s=fPeople.toLowerCase();list=list.filter(e=>[e.fullName,e.login,e.email,e.dept,e.location].join(' ').toLowerCase().includes(s));}
+  if(fPeople)list=list.filter(e=>matchQuery([e.fullName,e.login,e.email,e.dept,e.position,e.location].join(' '),fPeople));
   list.sort((a,b)=>a.fullName.localeCompare(b.fullName,'ru'));
   return `
   <div class="card">
@@ -376,6 +387,45 @@ function viewActs(){
   </div>`;
 }
 
+
+/* ===== SUPPLIERS view ===== */
+function viewSuppliers(){
+  const sups=(DB.suppliers||[]).slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+  return `
+  <div class="card">
+    <div class="card-h"><h2>Поставщики <span class="tag">${sups.length}</span></h2><div class="toolbar"><button class="btn primary" id="sup-add">+ Поставщик</button></div></div>
+    <div class="tbl-scroll"><table>
+      <thead><tr><th>Название</th><th>Контакт</th><th>Телефон</th><th>E-mail</th><th>Техники</th><th></th></tr></thead>
+      <tbody>${sups.map(s=>{const n=(DB.equipment||[]).filter(e=>e.supplierId===s.id).length;
+        return `<tr><td><b>${esc(s.name)}</b>${s.note?`<div class="sub">${esc(s.note)}</div>`:''}</td><td>${esc(s.contact)||'—'}</td><td>${esc(s.phone)||'—'}</td><td>${esc(s.email)||'—'}</td><td>${n?`<span class="tag">${n} ед.</span>`:'<span class="sub">—</span>'}</td>
+          <td class="row-actions"><button class="btn sm ghost" data-sact="sedit" data-id="${s.id}">✎</button><button class="btn sm ghost danger" data-sact="sdel" data-id="${s.id}">✕</button></td></tr>`;
+      }).join('')||'<tr><td colspan="6" class="empty">Поставщиков нет</td></tr>'}</tbody>
+    </table></div>
+  </div>`;
+}
+function supplierModal(id){
+  const s=id?supById(id):{name:'',contact:'',phone:'',email:'',note:''};
+  openModal(`<div class="modal-h"><h3>${id?'Поставщик':'Новый поставщик'}</h3></div>
+    <div class="modal-b">
+      <div class="field"><label>Название</label><input id="s-name" value="${esc(s.name)}" placeholder="ООО «Ромашка»"></div>
+      <div class="grid2"><div class="field"><label>Контактное лицо</label><input id="s-contact" value="${esc(s.contact||'')}"></div>
+        <div class="field"><label>Телефон</label><input id="s-phone" value="${esc(s.phone||'')}"></div></div>
+      <div class="field"><label>E-mail</label><input id="s-email" value="${esc(s.email||'')}"></div>
+      <div class="field"><label>Примечание</label><input id="s-note" value="${esc(s.note||'')}"></div>
+    </div>
+    <div class="modal-f"><button class="btn ghost" id="m-cancel">Отмена</button><button class="btn primary" id="m-save">Сохранить</button></div>`);
+  $('#m-cancel').onclick=closeModal;
+  $('#m-save').onclick=async()=>{
+    const data={name:$('#s-name').value.trim(),contact:$('#s-contact').value.trim(),phone:$('#s-phone').value.trim(),email:$('#s-email').value.trim(),note:$('#s-note').value.trim()};
+    if(!data.name){toast('Укажите название');return;}
+    try{if(id)await api('PUT','/api/suppliers/'+id,data);else await api('POST','/api/suppliers',data);closeModal();await reload();}catch(e){errToast(e);}
+  };
+}
+async function supplierDel(id){
+  const s=supById(id);const n=(DB.equipment||[]).filter(e=>e.supplierId===id).length;
+  if(!confirm('Удалить поставщика «'+(s?s.name:'')+'»?'+(n?' У '+n+' ед. техники поставщик очистится.':'')))return;
+  try{await api('DELETE','/api/suppliers/'+id);await reload();}catch(e){errToast(e);}
+}
 
 /* ===== CARTRIDGES view ===== */
 function viewCartridges(){
@@ -541,12 +591,13 @@ function render(){
   else if(view==='people')app.innerHTML=viewPeople();
   else if(view==='acts')app.innerHTML=viewActs();
   else if(view==='cart')app.innerHTML=viewCartridges();
+  else if(view==='sup')app.innerHTML=viewSuppliers();
   else if(view==='data')app.innerHTML=viewData();
   bindView();
 }
 function bindView(){
   if(view==='equip'){
-    $('#eq-q').oninput=e=>{fEquip.q=e.target.value;render();$('#eq-q').focus();};
+    $('#eq-q').oninput=e=>{const p=e.target.selectionStart;fEquip.q=e.target.value;render();const el=$('#eq-q');if(el){el.focus();try{el.setSelectionRange(p,p);}catch(_){}}};
     $('#eq-type').onchange=e=>{fEquip.type=e.target.value;render();};
     $('#eq-status').onchange=e=>{fEquip.status=e.target.value;render();};
     $('#eq-add').onclick=()=>editEquip(null);
@@ -559,7 +610,7 @@ function bindView(){
     });
   }
   if(view==='people'){
-    $('#pp-q').oninput=e=>{fPeople=e.target.value;render();$('#pp-q').focus();};
+    $('#pp-q').oninput=e=>{const p=e.target.selectionStart;fPeople=e.target.value;render();const el=$('#pp-q');if(el){el.focus();try{el.setSelectionRange(p,p);}catch(_){}}};
     $('#pp-add').onclick=()=>editPerson(null);
     document.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>{
       const id=b.dataset.id,a=b.dataset.act;
@@ -583,6 +634,11 @@ function bindView(){
       if(a==='plus')cartStock(id,1);else if(a==='minus')cartStock(id,-1);else if(a==='cedit')cartModal(id);else if(a==='cdel')cartDel(id);});
     document.querySelectorAll('[data-pact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.pact;
       if(a==='pedit')printerModal(id);else if(a==='pdel')printerDel(id);});
+  }
+  if(view==='sup'){
+    $('#sup-add').onclick=()=>supplierModal(null);
+    document.querySelectorAll('[data-sact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.sact;
+      if(a==='sedit')supplierModal(id);else if(a==='sdel')supplierDel(id);});
   }
   if(view==='data'){
     $('#o-save').onclick=async()=>{await api('PUT','/api/settings/org',{name:$('#o-name').value.trim(),inn:$('#o-inn').value.trim(),address:$('#o-address').value.trim(),city:$('#o-city').value.trim(),signatory:$('#o-signatory').value.trim(),signatoryShort:$('#o-sigshort').value.trim(),basis:$('#o-basis').value.trim()});await reload();toast('Реквизиты сохранены');};
@@ -617,7 +673,7 @@ function errToast(e){toast((e&&e.message&&e.message!=='unauth')?e.message:'Не 
 
 /* ===== equipment ===== */
 function editEquip(id){
-  const e=id?eqById(id):{type:'Ноутбук',name:'',invno:'',serial:'',purchase:'',status:'stock',location:'',note:''};
+  const e=id?eqById(id):{type:'Ноутбук',name:'',innerName:'',invno:'',serial:'',purchase:'',status:'stock',location:'',note:'',supplierId:''};
   openModal(`
     <div class="modal-h"><h3>${id?'Редактировать технику':'Новая техника'}</h3></div>
     <div class="modal-b">
@@ -626,15 +682,19 @@ function editEquip(id){
         <div class="field"><label>Статус</label><select id="f-status">${Object.entries(STATUS).map(([k,v])=>`<option value="${k}" ${e.status===k?'selected':''}>${v}</option>`).join('')}</select></div>
       </div>
       <div class="field"><label>Наименование / модель</label><input id="f-name" value="${esc(e.name)}" placeholder="Напр. HP ProBook 450 G11"></div>
+      <div class="field"><label>Внутреннее наименование</label><input id="f-inner" value="${esc(e.innerName||'')}" placeholder="как называете внутри компании"></div>
       <div class="grid2">
         <div class="field"><label>Инв. № (порядковый)</label><input id="f-invno" value="${esc(e.invno)}" placeholder="авто — присвоится по порядку"></div>
         <div class="field"><label>Серийный № (S/N)</label><input id="f-serial" value="${esc(e.serial)}"></div>
       </div>
       <div class="grid2">
         <div class="field"><label>Локация</label><input id="f-location" value="${esc(e.location)}" placeholder="Москва / офис"></div>
-        <div class="field"><label>Номер заказа / дата покупки</label><input id="f-purchase" value="${esc(e.purchase)}" placeholder="Напр. V050292468 от 09.04.2026"></div>
+        <div class="field"><label>Поставщик</label><select id="f-supplier"><option value="">— не указан —</option>${(DB.suppliers||[]).map(s=>`<option value="${s.id}" ${e.supplierId===s.id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>
       </div>
-      <div class="field"><label>Стоимость, руб.</label><input id="f-cost" value="${esc(e.cost||'')}" placeholder="Напр. 79 990"></div>
+      <div class="grid2">
+        <div class="field"><label>Номер заказа / дата покупки</label><input id="f-purchase" value="${esc(e.purchase)}" placeholder="Напр. V050292468 от 09.04.2026"></div>
+        <div class="field"><label>Стоимость, руб.</label><input id="f-cost" value="${esc(e.cost||'')}" placeholder="Напр. 79 990"></div>
+      </div>
       <div class="field"><label>Примечание</label><input id="f-note" value="${esc(e.note||'')}"></div>
       <p class="hint">Привязку меняйте кнопкой «Назначить» / «Вернуть» в списке. Штрих-код кодирует инвентарный № (или ID, если он пуст).</p>
     </div>
@@ -642,7 +702,8 @@ function editEquip(id){
   $('#m-cancel').onclick=closeModal;
   $('#m-save').onclick=async()=>{
     const data={type:$('#f-type').value,status:$('#f-status').value,name:$('#f-name').value.trim(),
-      invno:$('#f-invno').value.trim(),serial:$('#f-serial').value.trim(),location:$('#f-location').value.trim(),
+      innerName:$('#f-inner').value.trim(),invno:$('#f-invno').value.trim(),serial:$('#f-serial').value.trim(),
+      location:$('#f-location').value.trim(),supplierId:$('#f-supplier').value,
       purchase:$('#f-purchase').value.trim(),cost:$('#f-cost').value.trim(),note:$('#f-note').value.trim()};
     if(!data.name){toast('Укажите наименование');return;}
     try{if(id)await api('PUT','/api/equipment/'+id,data);else await api('POST','/api/equipment',data);closeModal();await reload();}catch(e){errToast(e);}
@@ -664,7 +725,9 @@ function assignModal(id){
         </div>
       </div>
       <div id="i-emp-box">
-        <div class="field"><label>Сотрудник</label><select id="i-emp"><option value="">— выберите —</option>${emps.map(p=>`<option value="${p.id}" ${e.empId===p.id?'selected':''}>${esc(p.fullName)}${p.login?' ('+esc(p.login)+')':''}</option>`).join('')}</select></div>
+        <div class="field"><label>Сотрудник</label>
+          <input id="i-emp-q" class="search" placeholder="Поиск: ФИО, логин…" style="width:100%;margin-bottom:6px">
+          <select id="i-emp" size="6" style="height:auto">${empOptionsHTML(e.empId,'')}</select></div>
         <div class="field"><label>Рабочее место (необязательно)</label><input id="i-wp" value="${esc(e.workplace)}" placeholder="Напр. Офис Москва, каб. 3 / удалённо"></div>
         <label class="checkitem" style="border:0;padding:0;margin-top:4px"><input type="checkbox" id="i-act" checked> <span>Сразу сформировать акт выдачи</span></label>
       </div>
@@ -678,6 +741,7 @@ function assignModal(id){
   const sync=()=>{$('#i-emp-box').classList.toggle('hidden',mode!=='employee');$('#i-wp-box').classList.toggle('hidden',mode!=='workplace');};
   document.querySelectorAll('#i-seg button').forEach(b=>b.onclick=()=>{mode=b.dataset.mode;document.querySelectorAll('#i-seg button').forEach(x=>x.classList.toggle('on',x===b));sync();});
   sync();
+  $('#i-emp-q').oninput=()=>{const cur=$('#i-emp').value;$('#i-emp').innerHTML=empOptionsHTML(cur,$('#i-emp-q').value);};
   $('#m-cancel').onclick=closeModal;
   $('#m-save').onclick=async()=>{
     try{
@@ -790,7 +854,9 @@ function actModal(){
     <div class="modal-b">
       <div class="grid2">
         <div class="field"><label>Тип акта</label><select id="a-kind"><option value="issue">Выдача</option><option value="return">Возврат</option></select></div>
-        <div class="field"><label>Сотрудник</label><select id="a-emp"><option value="">— выберите —</option>${emps.map(p=>`<option value="${p.id}">${esc(p.fullName)}</option>`).join('')}</select></div>
+        <div class="field"><label>Сотрудник</label>
+          <input id="a-emp-q" class="search" placeholder="Поиск: ФИО, логин…" style="width:100%;margin-bottom:6px">
+          <select id="a-emp" size="6" style="height:auto">${empOptionsHTML('','')}</select></div>
       </div>
       <div class="field"><label>Позиции</label><div id="a-items" class="checklist"><p class="hint" style="padding:12px">Выберите сотрудника.</p></div>
         <p class="hint">Для выдачи показывается техника на складе и уже закреплённая за сотрудником; для возврата — закреплённая за ним.</p></div>
@@ -802,6 +868,7 @@ function actModal(){
     let items=kind==='return'?DB.equipment.filter(e=>e.empId===empId):DB.equipment.filter(e=>e.status==='stock'||e.empId===empId);
     $('#a-items').innerHTML=items.length?items.map(e=>`<label class="checkitem"><input type="checkbox" value="${e.id}" ${e.empId===empId?'checked':''}><div class="meta"><div>${esc(e.name)} <span class="tag">${esc(e.type)}</span></div><div class="sub">инв.${esc(e.invno)||'—'} · S/N ${esc(e.serial)||'—'} · ${STATUS[e.status]}</div></div></label>`).join(''):'<p class="hint" style="padding:12px">Нет подходящей техники.</p>';
   };
+  $('#a-emp-q').oninput=()=>{const cur=$('#a-emp').value;$('#a-emp').innerHTML=empOptionsHTML(cur,$('#a-emp-q').value);};
   $('#a-emp').onchange=fill;$('#a-kind').onchange=fill;
   $('#m-save').onclick=async()=>{
     const empId=$('#a-emp').value;if(!empId){toast('Выберите сотрудника');return;}
@@ -914,8 +981,8 @@ function printAct(a){
 /* ===== export/import ===== */
 function download(name,content,type){const blob=new Blob([content],{type:type||'application/octet-stream'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function exportCSV(){
-  const head=['Тип','Наименование','Инв.№','S/N','Статус','Сотрудник / место','Логин','E-mail','Рабочее место','Локация','Заказ / дата покупки','Стоимость','Примечание'];
-  const rows=DB.equipment.map(e=>{const emp=e.empId?empById(e.empId):null;return [e.type,e.name,e.invno,e.serial,STATUS[e.status],holderLabel(e),emp?emp.login:'',emp?emp.email:'',e.workplace,e.location,e.purchase,e.cost||'',e.note||''].map(v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"').join(';');});
+  const head=['Тип','Наименование','Внутр. наименование','Инв.№','S/N','Статус','Сотрудник / место','Логин','E-mail','Рабочее место','Локация','Поставщик','Заказ / дата покупки','Стоимость','Примечание'];
+  const rows=DB.equipment.map(e=>{const emp=e.empId?empById(e.empId):null;return [e.type,e.name,e.innerName||'',e.invno,e.serial,STATUS[e.status],holderLabel(e),emp?emp.login:'',emp?emp.email:'',e.workplace,e.location,(supById(e.supplierId)||{}).name||'',e.purchase,e.cost||'',e.note||''].map(v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"').join(';');});
   download('technika-'+fmtDate().replace(/\./g,'-')+'.csv','﻿'+head.join(';')+'\n'+rows.join('\n'),'text/csv');
 }
 function importJSON(ev){

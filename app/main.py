@@ -90,6 +90,8 @@ class Equipment(Base):
     workplace: Mapped[str] = mapped_column(String(200), default="")
     assign_type: Mapped[str] = mapped_column(String(16), default="")   # employee | workplace | ""
     cost: Mapped[str] = mapped_column(String(32), default="")          # стоимость, руб.
+    inner_name: Mapped[str] = mapped_column(String(300), default="")   # внутреннее наименование
+    supplier_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     location: Mapped[str] = mapped_column(String(128), default="")
     note: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -110,6 +112,15 @@ class Setting(Base):
     __tablename__ = "settings"
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[dict] = mapped_column(JSONType, default=dict)
+
+class Supplier(Base):
+    __tablename__ = "suppliers"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    contact: Mapped[str] = mapped_column(String(200), default="")
+    phone: Mapped[str] = mapped_column(String(64), default="")
+    email: Mapped[str] = mapped_column(String(128), default="")
+    note: Mapped[str] = mapped_column(Text, default="")
 
 class Printer(Base):
     __tablename__ = "printers"
@@ -155,7 +166,12 @@ def eq_dict(e: Equipment):
     return {"id": e.id, "type": e.type, "name": e.name, "invno": e.invno, "serial": e.serial,
             "purchase": e.purchase, "status": e.status, "empId": e.emp_id or "",
             "holderText": e.holder_text, "workplace": e.workplace, "assignType": e.assign_type,
-            "cost": e.cost, "location": e.location, "note": e.note}
+            "cost": e.cost, "innerName": e.inner_name, "supplierId": e.supplier_id or "",
+            "location": e.location, "note": e.note}
+
+def supplier_dict(s: Supplier):
+    return {"id": s.id, "name": s.name, "contact": s.contact, "phone": s.phone,
+            "email": s.email, "note": s.note}
 
 def printer_dict(p: Printer):
     return {"id": p.id, "name": p.name, "model": p.model, "location": p.location,
@@ -438,6 +454,7 @@ def state(db: Session = Depends(get_db), u: User = Depends(current_user)):
         "employees": [emp_dict(e) for e in db.scalars(select(Employee)).all()],
         "equipment": [eq_dict(e) for e in db.scalars(select(Equipment)).all()],
         "acts": [act_dict(a) for a in db.scalars(select(Act)).all()],
+        "suppliers": [supplier_dict(s) for s in db.scalars(select(Supplier)).all()],
         "printers": [printer_dict(p) for p in db.scalars(select(Printer)).all()],
         "cartridges": [cartridge_dict(cg, {p.id: p for p in db.scalars(select(Printer)).all()})
                        for cg in db.scalars(select(Cartridge)).all()],
@@ -625,9 +642,45 @@ def emp_delete(eid: str, db: Session = Depends(get_db), u: User = Depends(curren
     db.delete(e); db.commit()
     return {"ok": True}
 
+# ---------- suppliers (справочник поставщиков)
+SUPPLIER_FIELDS = [("name", "name"), ("contact", "contact"), ("phone", "phone"),
+                   ("email", "email"), ("note", "note")]
+
+@app.post("/api/suppliers")
+def supplier_create(body: dict, db: Session = Depends(get_db), u: User = Depends(current_user)):
+    s = Supplier(id="sup-" + secrets.token_hex(5))
+    for j, c in SUPPLIER_FIELDS:
+        if j in body:
+            setattr(s, c, (body[j] or "").strip())
+    if not s.name:
+        raise HTTPException(400, "Укажите название поставщика")
+    db.add(s); db.commit()
+    return supplier_dict(s)
+
+@app.put("/api/suppliers/{sid}")
+def supplier_update(sid: str, body: dict, db: Session = Depends(get_db), u: User = Depends(current_user)):
+    s = db.get(Supplier, sid)
+    if not s:
+        raise HTTPException(404, "Не найдено")
+    for j, c in SUPPLIER_FIELDS:
+        if j in body:
+            setattr(s, c, (body[j] or "").strip())
+    db.commit()
+    return supplier_dict(s)
+
+@app.delete("/api/suppliers/{sid}")
+def supplier_delete(sid: str, db: Session = Depends(get_db), u: User = Depends(current_user)):
+    s = db.get(Supplier, sid)
+    if not s:
+        raise HTTPException(404, "Не найдено")
+    for q in db.scalars(select(Equipment).where(Equipment.supplier_id == sid)).all():
+        q.supplier_id = None
+    db.delete(s); db.commit()
+    return {"ok": True}
+
 # ---------- equipment
-EQ_FIELDS = [("type", "type"), ("name", "name"), ("invno", "invno"), ("serial", "serial"),
-             ("purchase", "purchase"), ("status", "status"), ("cost", "cost"),
+EQ_FIELDS = [("type", "type"), ("name", "name"), ("innerName", "inner_name"), ("invno", "invno"),
+             ("serial", "serial"), ("purchase", "purchase"), ("status", "status"), ("cost", "cost"),
              ("location", "location"), ("note", "note")]
 
 @app.post("/api/equipment")
@@ -640,6 +693,8 @@ def eq_create(body: dict, db: Session = Depends(get_db), u: User = Depends(curre
             setattr(q, c, (body[j] or "").strip())
     if q.status not in STATUSES:
         q.status = "stock"
+    if "supplierId" in body:
+        q.supplier_id = body["supplierId"] or None
     if not q.invno:                       # ИНВ.№ — порядковый номер, присваивается автоматически
         q.invno = _next_inv(db)
     db.add(q); db.commit()
@@ -653,6 +708,8 @@ def eq_update(qid: str, body: dict, db: Session = Depends(get_db), u: User = Dep
     for j, c in EQ_FIELDS:
         if j in body:
             setattr(q, c, (body[j] or "").strip())
+    if "supplierId" in body:
+        q.supplier_id = body["supplierId"] or None
     db.commit()
     return eq_dict(q)
 
@@ -867,6 +924,7 @@ def export_all(db: Session = Depends(get_db), u: User = Depends(current_user)):
         "employees": [emp_dict(e) for e in db.scalars(select(Employee)).all()],
         "equipment": [eq_dict(e) for e in db.scalars(select(Equipment)).all()],
         "acts": [act_dict(a) for a in db.scalars(select(Act)).all()],
+        "suppliers": [supplier_dict(s) for s in db.scalars(select(Supplier)).all()],
         "printers": [printer_dict(p) for p in db.scalars(select(Printer)).all()],
         "cartridges": [cartridge_dict(cg, _printers_map(db)) for cg in db.scalars(select(Cartridge)).all()],
     }
@@ -881,17 +939,19 @@ def _holder_label(e: Equipment, emp_by_id: dict) -> str:
         return "РМ: " + e.workplace
     return e.holder_text or ""
 
-EXPORT_HEADERS = ["Тип", "Наименование", "Инв. №", "S/N", "Статус", "Сотрудник / место",
-                  "Логин", "E-mail", "Рабочее место", "Локация", "Заказ / дата покупки",
-                  "Стоимость, руб.", "Примечание"]
+EXPORT_HEADERS = ["Тип", "Наименование", "Внутр. наименование", "Инв. №", "S/N", "Статус",
+                  "Сотрудник / место", "Логин", "E-mail", "Рабочее место", "Локация",
+                  "Поставщик", "Заказ / дата покупки", "Стоимость, руб.", "Примечание"]
 
 def _equipment_rows(db: Session):
     emps = {e.id: e for e in db.scalars(select(Employee)).all()}
+    sups = {s.id: s for s in db.scalars(select(Supplier)).all()}
     for e in db.scalars(select(Equipment)).all():
         emp = emps.get(e.emp_id) if e.emp_id else None
-        yield [e.type, e.name, e.invno, e.serial, STATUS_RU.get(e.status, e.status),
+        sup = sups.get(e.supplier_id) if e.supplier_id else None
+        yield [e.type, e.name, e.inner_name, e.invno, e.serial, STATUS_RU.get(e.status, e.status),
                _holder_label(e, emps), (emp.login if emp else ""), (emp.email if emp else ""),
-               e.workplace, e.location, e.purchase, e.cost, e.note]
+               e.workplace, e.location, (sup.name if sup else ""), e.purchase, e.cost, e.note]
 
 @app.get("/api/export/equipment.xlsx")
 def export_xlsx(db: Session = Depends(get_db), u: User = Depends(current_user)):
@@ -907,7 +967,7 @@ def export_xlsx(db: Session = Depends(get_db), u: User = Depends(current_user)):
         c.fill = PatternFill("solid", fgColor="2563EB")
         c.alignment = Alignment(vertical="center", wrap_text=True)
     ws.freeze_panes = "A2"
-    for i, w in enumerate([14, 34, 10, 16, 12, 22, 18, 26, 20, 16, 26, 14, 24], 1):
+    for i, w in enumerate([14, 34, 28, 10, 16, 12, 22, 18, 26, 20, 16, 22, 26, 14, 24], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     if ws.max_row > 1:
         ws.auto_filter.ref = ws.dimensions
@@ -928,6 +988,7 @@ def wipe(body: dict, db: Session = Depends(get_db), u: User = Depends(current_us
     db.query(Employee).delete()
     db.query(Cartridge).delete()
     db.query(Printer).delete()
+    db.query(Supplier).delete()
     seq = db.get(Setting, "seq")
     if seq:
         seq.value = {"act": 0, "inv": 1}
@@ -944,6 +1005,12 @@ def import_all(body: dict, db: Session = Depends(get_db), u: User = Depends(curr
     db.query(Employee).delete()
     db.query(Cartridge).delete()
     db.query(Printer).delete()
+    db.query(Supplier).delete()
+    for s in body.get("suppliers", []):
+        if s.get("id"):
+            db.add(Supplier(id=s["id"], name=s.get("name", ""), contact=s.get("contact", ""),
+                            phone=s.get("phone", ""), email=s.get("email", ""), note=s.get("note", "")))
+    supplier_ids = {s.get("id") for s in body.get("suppliers", []) if s.get("id")}
     for p in body.get("printers", []):
         if p.get("id"):
             db.add(Printer(id=p["id"], name=p.get("name", ""), model=p.get("model", ""),
@@ -975,12 +1042,16 @@ def import_all(body: dict, db: Session = Depends(get_db), u: User = Depends(curr
         emp = q.get("empId") or None
         if emp and emp not in emp_ids:
             emp = None
+        sup = q.get("supplierId") or None
+        if sup and sup not in supplier_ids:
+            sup = None
         db.add(Equipment(id=q.get("id") or ("eq-" + secrets.token_hex(5)), type=q.get("type", "Прочее"),
-                         name=q.get("name", ""), invno=q.get("invno", ""), serial=q.get("serial", ""),
+                         name=q.get("name", ""), inner_name=q.get("innerName", ""),
+                         invno=q.get("invno", ""), serial=q.get("serial", ""),
                          purchase=q.get("purchase", ""), status=q.get("status", "stock"), emp_id=emp,
                          holder_text=q.get("holderText", ""), workplace=q.get("workplace", ""),
                          assign_type=q.get("assignType") or ("employee" if emp else ""),
-                         cost=q.get("cost", ""),
+                         cost=q.get("cost", ""), supplier_id=sup,
                          location=q.get("location", ""), note=q.get("note", "")))
     maxno = 0
     for a in body.get("acts", []):
