@@ -38,7 +38,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 # ---------------------------------------------------------------- config
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.4.0"
 
 # Разделы, доступ к которым можно выдавать обычным пользователям.
 GRANTABLE_SECTIONS = ["equip", "people", "acts", "cart", "sup", "tsd"]
@@ -139,6 +139,15 @@ class Tsd(Base):
     inner_no: Mapped[str] = mapped_column(String(64), default="")    # внутренний номер
     note: Mapped[str] = mapped_column(Text, default="")
 
+class Notification(Base):
+    __tablename__ = "notifications"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    telegram_chat_id: Mapped[str] = mapped_column(String(64), default="")
+    email: Mapped[str] = mapped_column(String(128), default="")
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    note: Mapped[str] = mapped_column(Text, default="")
+
 class Printer(Base):
     __tablename__ = "printers"
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -146,6 +155,7 @@ class Printer(Base):
     model: Mapped[str] = mapped_column(String(200), default="")
     location: Mapped[str] = mapped_column(String(128), default="")
     inv_no: Mapped[str] = mapped_column(String(64), default="")
+    notify_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
 
 class Cartridge(Base):
@@ -195,7 +205,11 @@ def tsd_dict(t: Tsd):
 
 def printer_dict(p: Printer):
     return {"id": p.id, "name": p.name, "model": p.model, "location": p.location,
-            "invNo": p.inv_no, "note": p.note}
+            "invNo": p.inv_no, "notifyId": p.notify_id or "", "note": p.note}
+
+def notification_dict(n: Notification):
+    return {"id": n.id, "name": n.name, "telegramChatId": n.telegram_chat_id,
+            "email": n.email, "enabled": bool(n.enabled), "note": n.note}
 
 def cartridge_dict(cg: Cartridge, printers_by_id: dict = None):
     pr = (printers_by_id or {}).get(cg.printer_id) if cg.printer_id else None
@@ -240,9 +254,10 @@ def _get_notify(db: Session) -> dict:
         cfg.update(s.value)
     return cfg
 
-def send_telegram(cfg: dict, text: str):
+def send_telegram(cfg: dict, text: str, chat_id: str = None):
     import urllib.request, urllib.parse
-    token, chat = cfg.get("telegram_token"), cfg.get("telegram_chat_id")
+    token = cfg.get("telegram_token")
+    chat = chat_id or cfg.get("telegram_chat_id")
     if not token or not chat:
         return False, "не задан токен или chat_id"
     try:
@@ -254,7 +269,7 @@ def send_telegram(cfg: dict, text: str):
     except Exception as ex:
         return False, str(ex)
 
-def send_email(cfg: dict, subject: str, text: str):
+def send_email(cfg: dict, subject: str, text: str, to: str = None):
     import smtplib
     from email.message import EmailMessage
     host = cfg.get("smtp_host")
@@ -264,7 +279,7 @@ def send_email(cfg: dict, subject: str, text: str):
         msg = EmailMessage()
         msg["Subject"] = subject
         msg["From"] = cfg.get("smtp_from") or cfg.get("smtp_user") or ""
-        msg["To"] = cfg.get("email_to") or ""
+        msg["To"] = to or cfg.get("email_to") or ""
         msg.set_content(text)
         port = int(cfg.get("smtp_port") or 587)
         srv = smtplib.SMTP_SSL(host, port, timeout=15) if port == 465 else smtplib.SMTP(host, port, timeout=15)
@@ -278,16 +293,24 @@ def send_email(cfg: dict, subject: str, text: str):
     except Exception as ex:
         return False, str(ex)
 
-def _notify_low(cfg: dict, cg, printer_name: str):
+def _notify_low(cfg: dict, cg, printer_name: str, dest: "Notification" = None):
     text = ("⚠️ Низкий остаток картриджа\n"
             f"Картридж: {cg.name}\n"
             + (f"Принтер: {printer_name}\n" if printer_name else "")
             + f"Остаток: {cg.stock} (минимум: {cg.min_stock})")
     out = []
-    if cfg.get("telegram_enabled"):
-        out.append(("telegram",) + send_telegram(cfg, text))
-    if cfg.get("email_enabled"):
-        out.append(("email",) + send_email(cfg, "Низкий остаток картриджа", text))
+    if dest is not None:
+        # адресат из справочника уведомлений принтера — шлём и в Telegram, и на почту сразу
+        if cfg.get("telegram_token") and dest.telegram_chat_id:
+            out.append(("telegram",) + send_telegram(cfg, text, chat_id=dest.telegram_chat_id))
+        if cfg.get("smtp_host") and dest.email:
+            out.append(("email",) + send_email(cfg, "Низкий остаток картриджа", text, to=dest.email))
+    else:
+        # глобальные настройки по умолчанию (принтер без привязки к уведомлению)
+        if cfg.get("telegram_enabled"):
+            out.append(("telegram",) + send_telegram(cfg, text))
+        if cfg.get("email_enabled"):
+            out.append(("email",) + send_email(cfg, "Низкий остаток картриджа", text))
     return out
 
 def _evaluate_alert(db: Session, cg):
@@ -299,7 +322,12 @@ def _evaluate_alert(db: Session, cg):
         return []
     cfg = _get_notify(db)
     pr = db.get(Printer, cg.printer_id) if cg.printer_id else None
-    res = _notify_low(cfg, cg, pr.name if pr else "")
+    dest = None
+    if pr and pr.notify_id:
+        d = db.get(Notification, pr.notify_id)
+        if d and d.enabled:
+            dest = d
+    res = _notify_low(cfg, cg, pr.name if pr else "", dest)
     cg.alerted = 1
     return [{"channel": c, "ok": ok, "info": info} for (c, ok, info) in res]
 
@@ -403,7 +431,7 @@ PERM_PREFIXES = [
     ("/api/users", "admin"), ("/api/settings", "admin"), ("/api/export", "admin"),
     ("/api/import", "admin"), ("/api/wipe", "admin"),
     ("/api/equipment", "equip"), ("/api/employees", "people"), ("/api/acts", "acts"),
-    ("/api/cartridges", "cart"), ("/api/printers", "cart"),
+    ("/api/cartridges", "cart"), ("/api/printers", "cart"), ("/api/notifications", "cart"),
     ("/api/suppliers", "sup"), ("/api/tsd", "tsd"),
 ]
 
@@ -672,6 +700,7 @@ def state(db: Session = Depends(get_db), u: User = Depends(current_user)):
         "printers": [printer_dict(p) for p in db.scalars(select(Printer)).all()] if allow("cart") else [],
         "cartridges": [cartridge_dict(cg, _printers_map(db))
                        for cg in db.scalars(select(Cartridge)).all()] if allow("cart") else [],
+        "notifications": [notification_dict(n) for n in db.scalars(select(Notification)).all()] if allow("cart") else [],
         "notify": _notify_masked(_get_notify(db)) if admin else None,
     }
 
@@ -685,6 +714,8 @@ def printer_create(body: dict, db: Session = Depends(get_db), u: User = Depends(
     for j, c in PRINTER_FIELDS:
         if j in body:
             setattr(p, c, (body[j] or "").strip())
+    if "notifyId" in body:
+        p.notify_id = body["notifyId"] or None
     if not p.name:
         raise HTTPException(400, "Укажите название принтера")
     db.add(p); db.commit()
@@ -698,6 +729,8 @@ def printer_update(pid: str, body: dict, db: Session = Depends(get_db), u: User 
     for j, c in PRINTER_FIELDS:
         if j in body:
             setattr(p, c, (body[j] or "").strip())
+    if "notifyId" in body:
+        p.notify_id = body["notifyId"] or None
     db.commit()
     return printer_dict(p)
 
@@ -776,6 +809,43 @@ def cartridge_check(db: Session = Depends(get_db), u: User = Depends(current_use
             fired += 1
     db.commit()
     return {"notified": fired}
+
+# ---------- notifications directory (справочник адресатов уведомлений)
+NOTIF_FIELDS = [("name", "name"), ("telegramChatId", "telegram_chat_id"), ("email", "email"), ("note", "note")]
+
+@app.post("/api/notifications")
+def notif_create(body: dict, db: Session = Depends(get_db), u: User = Depends(current_user)):
+    n = Notification(id="ntf-" + secrets.token_hex(5), enabled=0 if body.get("enabled") is False else 1)
+    for j, c in NOTIF_FIELDS:
+        if j in body:
+            setattr(n, c, (body[j] or "").strip())
+    if not n.name:
+        raise HTTPException(400, "Укажите название")
+    db.add(n); db.commit()
+    return notification_dict(n)
+
+@app.put("/api/notifications/{nid}")
+def notif_update(nid: str, body: dict, db: Session = Depends(get_db), u: User = Depends(current_user)):
+    n = db.get(Notification, nid)
+    if not n:
+        raise HTTPException(404, "Не найдено")
+    for j, c in NOTIF_FIELDS:
+        if j in body:
+            setattr(n, c, (body[j] or "").strip())
+    if "enabled" in body:
+        n.enabled = 1 if body["enabled"] else 0
+    db.commit()
+    return notification_dict(n)
+
+@app.delete("/api/notifications/{nid}")
+def notif_delete(nid: str, db: Session = Depends(get_db), u: User = Depends(current_user)):
+    n = db.get(Notification, nid)
+    if not n:
+        raise HTTPException(404, "Не найдено")
+    for p in db.scalars(select(Printer).where(Printer.notify_id == nid)).all():
+        p.notify_id = None
+    db.delete(n); db.commit()
+    return {"ok": True}
 
 # ---------- notify settings
 def _notify_masked(cfg: dict) -> dict:
@@ -1173,6 +1243,7 @@ def export_all(db: Session = Depends(get_db), u: User = Depends(current_user)):
         "acts": [act_dict(a) for a in db.scalars(select(Act)).all()],
         "suppliers": [supplier_dict(s) for s in db.scalars(select(Supplier)).all()],
         "tsd": [tsd_dict(t) for t in db.scalars(select(Tsd)).all()],
+        "notifications": [notification_dict(n) for n in db.scalars(select(Notification)).all()],
         "printers": [printer_dict(p) for p in db.scalars(select(Printer)).all()],
         "cartridges": [cartridge_dict(cg, _printers_map(db)) for cg in db.scalars(select(Cartridge)).all()],
     }
@@ -1238,6 +1309,7 @@ def wipe(body: dict, db: Session = Depends(get_db), u: User = Depends(current_us
     db.query(Printer).delete()
     db.query(Supplier).delete()
     db.query(Tsd).delete()
+    db.query(Notification).delete()
     seq = db.get(Setting, "seq")
     if seq:
         seq.value = {"act": 0, "inv": 1}
@@ -1256,6 +1328,11 @@ def import_all(body: dict, db: Session = Depends(get_db), u: User = Depends(curr
     db.query(Printer).delete()
     db.query(Supplier).delete()
     db.query(Tsd).delete()
+    db.query(Notification).delete()
+    for n in body.get("notifications", []):
+        if n.get("id"):
+            db.add(Notification(id=n["id"], name=n.get("name", ""), telegram_chat_id=n.get("telegramChatId", ""),
+                                email=n.get("email", ""), enabled=1 if n.get("enabled", True) else 0, note=n.get("note", "")))
     for s in body.get("suppliers", []):
         if s.get("id"):
             db.add(Supplier(id=s["id"], name=s.get("name", ""), contact=s.get("contact", ""),
@@ -1268,7 +1345,8 @@ def import_all(body: dict, db: Session = Depends(get_db), u: User = Depends(curr
     for p in body.get("printers", []):
         if p.get("id"):
             db.add(Printer(id=p["id"], name=p.get("name", ""), model=p.get("model", ""),
-                           location=p.get("location", ""), inv_no=p.get("invNo", ""), note=p.get("note", "")))
+                           location=p.get("location", ""), inv_no=p.get("invNo", ""),
+                           notify_id=p.get("notifyId") or None, note=p.get("note", "")))
     printer_ids = {p.get("id") for p in body.get("printers", []) if p.get("id")}
     for cg in body.get("cartridges", []):
         if not cg.get("id"):

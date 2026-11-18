@@ -165,6 +165,7 @@ td .sub{color:var(--muted);font-size:12px}
         <button class="dd-item" data-view="sup">Поставщики</button>
         <button class="dd-item" data-view="tsd">ТСД</button>
         <button class="dd-item" data-view="prn">Принтеры</button>
+        <button class="dd-item" data-view="notif">Уведомления</button>
       </div>
     </div>
     <button class="tab" data-view="acts">Акты</button>
@@ -249,7 +250,7 @@ async function api(method,path,body){
   if(!r.ok){let msg='';try{msg=(await r.json()).detail;}catch(e){}throw new Error(msg||('Ошибка '+r.status));}
   const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text();
 }
-const TAB_PERM={dash:null,about:null,data:null,users:'admin',equip:'equip',people:'people',acts:'acts',cart:'cart',prn:'cart',sup:'sup',tsd:'tsd'};
+const TAB_PERM={dash:null,about:null,data:'admin',users:'admin',equip:'equip',people:'people',acts:'acts',cart:'cart',prn:'cart',notif:'cart',sup:'sup',tsd:'tsd'};
 function applyTabs(){
   const u=DB.user||{},admin=u.isAdmin,perms=u.perms||[];
   const can=need=>!need?true:(need==='admin'?!!admin:(!!admin||perms.includes(need)));
@@ -270,8 +271,10 @@ function hideLogin(){$('#loginOverlay').hidden=true;}
 function paintUser(){
   const ver=$('#appver');if(ver&&DB.version)ver.textContent='v'+DB.version;
   const el=$('#userbox');if(!el)return;
-  el.innerHTML=`<span class="uname">${esc(DB.user&&DB.user.fullName||DB.user&&DB.user.username||'')}</span>
+  const nm=(DB.user&&(DB.user.fullName||DB.user.username))||'';
+  el.innerHTML=`<button class="btn sm ghost" id="u-profile" title="Профиль">${esc(nm)}${DB.user&&DB.user.twofa?' 🔒':''}</button>
     <button class="btn sm ghost" id="u-logout">Выход</button>`;
+  $('#u-profile').onclick=profileModal;
   $('#u-logout').onclick=async()=>{await api('POST','/api/logout');location.reload();};
 }
 async function doLogin(){
@@ -576,6 +579,45 @@ async function supplierDel(id){
   try{await api('DELETE','/api/suppliers/'+id);await reload();}catch(e){errToast(e);}
 }
 
+/* ===== Уведомления (справочник адресатов) ===== */
+function viewNotifications(){
+  const list=(DB.notifications||[]).slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+  return `
+  <div class="card">
+    <div class="card-h"><h2>Уведомления <span class="tag">${list.length}</span></h2><div class="toolbar"><button class="btn primary" id="ntf-add">+ Уведомление</button></div></div>
+    <div class="tbl-scroll"><table>
+      <thead><tr><th>Название</th><th>Telegram chat_id</th><th>E-mail</th><th>Принтеров</th><th>Вкл.</th><th></th></tr></thead>
+      <tbody>${list.map(n=>{const cnt=(DB.printers||[]).filter(p=>p.notifyId===n.id).length;
+        return `<tr${n.enabled?'':' style="opacity:.55"'}><td><b>${esc(n.name)}</b>${n.note?`<div class="sub">${esc(n.note)}</div>`:''}</td>
+          <td class="mono">${esc(n.telegramChatId)||'—'}</td><td>${esc(n.email)||'—'}</td>
+          <td>${cnt||'<span class="sub">—</span>'}</td><td>${n.enabled?'✓':'—'}</td>
+          <td class="row-actions"><button class="btn sm ghost" data-nact="nedit" data-id="${n.id}">✎</button><button class="btn sm ghost danger" data-nact="ndel" data-id="${n.id}">✕</button></td></tr>`;
+      }).join('')||'<tr><td colspan="6" class="empty">Адресатов нет</td></tr>'}</tbody>
+    </table></div>
+    <div class="modal-b"><p class="hint" style="margin:0">Адресат получает оповещение о низком остатке картриджа сразу и в Telegram, и на e-mail (что заполнено). Привязывается к принтеру в его карточке. Доступ к отправке (бот Telegram и SMTP-сервер) настраивает администратор на вкладке «Данные».</p></div>
+  </div>`;
+}
+function notifModal(id){
+  const n=id?(DB.notifications||[]).find(x=>x.id===id):{name:'',telegramChatId:'',email:'',enabled:true,note:''};
+  openModal(`<div class="modal-h"><h3>${id?'Уведомление':'Новое уведомление'}</h3></div>
+    <div class="modal-b">
+      <div class="field"><label>Название</label><input id="nt-name" value="${esc(n.name)}" placeholder="Напр. ИТ-отдел"></div>
+      <div class="field"><label>Telegram chat_id</label><input id="nt-chat" value="${esc(n.telegramChatId||'')}" placeholder="напр. -1001234567890"></div>
+      <div class="field"><label>E-mail</label><input id="nt-email" value="${esc(n.email||'')}" placeholder="it@example.ru"></div>
+      <label class="checkitem" style="border:0;padding:0"><input type="checkbox" id="nt-en" ${n.enabled?'checked':''}> <span>Включено</span></label>
+      <div class="field" style="margin-top:10px"><label>Примечание</label><input id="nt-note" value="${esc(n.note||'')}"></div>
+      <p class="hint">Заполните Telegram chat_id и/или e-mail — оповещение уйдёт в оба канала сразу.</p>
+    </div>
+    <div class="modal-f"><button class="btn ghost" id="m-cancel">Отмена</button><button class="btn primary" id="m-save">Сохранить</button></div>`);
+  $('#m-cancel').onclick=closeModal;
+  $('#m-save').onclick=async()=>{
+    const data={name:$('#nt-name').value.trim(),telegramChatId:$('#nt-chat').value.trim(),email:$('#nt-email').value.trim(),enabled:$('#nt-en').checked,note:$('#nt-note').value.trim()};
+    if(!data.name){toast('Укажите название');return;}
+    try{if(id)await api('PUT','/api/notifications/'+id,data);else await api('POST','/api/notifications',data);closeModal();await reload();}catch(e){errToast(e);}
+  };
+}
+async function notifDel(id){const n=(DB.notifications||[]).find(x=>x.id===id);if(confirm('Удалить уведомление «'+((n&&n.name)||'')+'»?')){try{await api('DELETE','/api/notifications/'+id);await reload();}catch(e){errToast(e);}}}
+
 /* ===== CARTRIDGES view ===== */
 function viewCartridges(){
   const carts=(DB.cartridges||[]).slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
@@ -653,19 +695,23 @@ function cartModal(id){
   };
 }
 function printerModal(id){
-  const p=id?(DB.printers||[]).find(x=>x.id===id):{name:'',model:'',location:'',invNo:'',note:''};
+  const p=id?(DB.printers||[]).find(x=>x.id===id):{name:'',model:'',location:'',invNo:'',note:'',notifyId:''};
   openModal(`<div class="modal-h"><h3>${id?'Принтер':'Новый принтер'}</h3></div>
     <div class="modal-b">
       <div class="field"><label>Название</label><input id="pr-name" value="${esc(p.name)}" placeholder="HP LaserJet M428"></div>
       <div class="grid2"><div class="field"><label>Модель</label><input id="pr-model" value="${esc(p.model)}"></div>
         <div class="field"><label>Инв. №</label><input id="pr-inv" value="${esc(p.invNo)}"></div></div>
       <div class="field"><label>Локация</label><input id="pr-loc" value="${esc(p.location)}"></div>
+      <div class="field"><label>Уведомление (кому слать о низком остатке картриджа)</label>
+        <select id="pr-notify"><option value="">— по умолчанию (глобальные настройки)</option>${(DB.notifications||[]).map(n=>`<option value="${n.id}" ${p.notifyId===n.id?'selected':''}>${esc(n.name)}${n.enabled?'':' (выкл.)'}</option>`).join('')}</select>
+        <p class="hint">Список адресатов — «Справочники → Уведомления».</p>
+      </div>
       <div class="field"><label>Примечание</label><input id="pr-note" value="${esc(p.note||'')}"></div>
     </div>
     <div class="modal-f"><button class="btn ghost" id="m-cancel">Отмена</button><button class="btn primary" id="m-save">Сохранить</button></div>`);
   $('#m-cancel').onclick=closeModal;
   $('#m-save').onclick=async()=>{
-    const data={name:$('#pr-name').value.trim(),model:$('#pr-model').value.trim(),invNo:$('#pr-inv').value.trim(),location:$('#pr-loc').value.trim(),note:$('#pr-note').value.trim()};
+    const data={name:$('#pr-name').value.trim(),model:$('#pr-model').value.trim(),invNo:$('#pr-inv').value.trim(),location:$('#pr-loc').value.trim(),notifyId:$('#pr-notify').value,note:$('#pr-note').value.trim()};
     if(!data.name){toast('Укажите название');return;}
     try{if(id)await api('PUT','/api/printers/'+id,data);else await api('POST','/api/printers',data);closeModal();await reload();}catch(e){errToast(e);}
   };
@@ -673,20 +719,7 @@ function printerModal(id){
 
 /* ===== DATA view ===== */
 function viewData(){
-  const admin=DB.user&&DB.user.isAdmin;
-  const security=`
-  <div class="card" style="margin-bottom:16px">
-    <div class="card-h"><h2>Безопасность</h2></div>
-    <div class="modal-b">
-      <p class="hint" style="margin-top:0">Аккаунт: <b>${esc((DB.user&&(DB.user.fullName||DB.user.username))||'')}</b> · роль: ${admin?'администратор':'пользователь'}</p>
-      <div class="toolbar">
-        <button class="btn" id="sec-pass">Сменить пароль</button>
-        <button class="btn ${DB.user&&DB.user.twofa?'':'primary'}" id="sec-2fa">${DB.user&&DB.user.twofa?'Двухфакторная аутентификация: включена':'Включить двухфакторную аутентификацию (2FA)'}</button>
-      </div>
-    </div>
-  </div>`;
-  if(!admin) return security;
-  return security + `
+  return `
   <div class="card" style="margin-bottom:16px">
     <div class="card-h"><h2>Реквизиты для актов (Работодатель)</h2></div>
     <div class="modal-b">
@@ -706,8 +739,9 @@ function viewData(){
   </div>
   ${(()=>{const n=DB.notify||{};return `
   <div class="card" style="margin-bottom:16px">
-    <div class="card-h"><h2>Уведомления о низком остатке картриджей</h2></div>
+    <div class="card-h"><h2>Уведомления — транспорт и адресат по умолчанию</h2></div>
     <div class="modal-b">
+      <p class="hint" style="margin-top:0">Здесь задаётся доступ к отправке (бот Telegram и SMTP-сервер) и адресат по умолчанию для принтеров без привязки. Разные адресаты для принтеров — в «Справочники → Уведомления».</p>
       <label class="checkitem" style="border:0;padding:0"><input type="checkbox" id="n-tg-en" ${n.telegram_enabled?'checked':''}> <span><b>Telegram</b></span></label>
       <div class="grid2" style="margin-top:8px">
         <div class="field"><label>Bot token${n.telegram_token_set?' (задан, пусто — не менять)':''}</label><input id="n-tg-token" placeholder="${n.telegram_token_set?'••••••••':'123456:AA...'}"></div>
@@ -748,7 +782,7 @@ function viewData(){
 }
 
 /* ===== render ===== */
-const REF_SECTIONS=['equip','people','sup','tsd','prn'];
+const REF_SECTIONS=['equip','people','sup','tsd','prn','notif'];
 function render(){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===view));
   const ddb=document.getElementById('dd-ref-btn');if(ddb)ddb.classList.toggle('active',REF_SECTIONS.includes(view));
@@ -760,6 +794,7 @@ function render(){
   else if(view==='acts')app.innerHTML=viewActs();
   else if(view==='cart')app.innerHTML=viewCartridges();
   else if(view==='prn')app.innerHTML=viewPrinters();
+  else if(view==='notif')app.innerHTML=viewNotifications();
   else if(view==='sup')app.innerHTML=viewSuppliers();
   else if(view==='tsd')app.innerHTML=viewTsd();
   else if(view==='users')app.innerHTML=viewUsers();
@@ -809,6 +844,11 @@ function bindView(){
     document.querySelectorAll('[data-pact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.pact;
       if(a==='pedit')printerModal(id);else if(a==='pdel')printerDel(id);});
   }
+  if(view==='notif'){
+    $('#ntf-add').onclick=()=>notifModal(null);
+    document.querySelectorAll('[data-nact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.nact;
+      if(a==='nedit')notifModal(id);else if(a==='ndel')notifDel(id);});
+  }
   if(view==='sup'){
     $('#sup-add').onclick=()=>supplierModal(null);
     document.querySelectorAll('[data-sact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.sact;
@@ -825,9 +865,6 @@ function bindView(){
       if(a==='uedit')userModal(id);else if(a==='udel')userDel(id);});
   }
   if(view==='data'){
-    $('#sec-pass').onclick=passwordModal;
-    $('#sec-2fa').onclick=twofaModal;
-    if(!$('#o-save'))return;   // не администратор — только карточка «Безопасность»
     $('#o-save').onclick=async()=>{await api('PUT','/api/settings/org',{name:$('#o-name').value.trim(),inn:$('#o-inn').value.trim(),address:$('#o-address').value.trim(),city:$('#o-city').value.trim(),signatory:$('#o-signatory').value.trim(),signatoryShort:$('#o-sigshort').value.trim(),basis:$('#o-basis').value.trim()});await reload();toast('Реквизиты сохранены');};
     $('#d-export').onclick=()=>{window.location='/api/export';};
     $('#d-csv').onclick=exportCSV;
@@ -1065,6 +1102,25 @@ function actModal(){
     if(!ids.length){toast('Отметьте хотя бы одну позицию');return;}
     try{const act=await api('POST','/api/acts',{kind:$('#a-kind').value,empId,itemIds:ids});closeModal();view='acts';await reload();printAct(act);}catch(e){errToast(e);}
   };
+}
+
+/* ===== профиль пользователя ===== */
+function profileModal(){
+  const u=DB.user||{};
+  openModal(`<div class="modal-h"><h3>Профиль</h3></div>
+    <div class="modal-b">
+      <p class="hint" style="margin-top:0">Пользователь: <b>${esc(u.fullName||u.username||'')}</b> · логин: <span class="mono">${esc(u.username||'')}</span> · роль: ${u.isAdmin?'администратор':'пользователь'}</p>
+      <div class="field"><label>Двухфакторная аутентификация (2FA)</label>
+        <div>${u.twofa?'<span class="badge b-issued">Включена</span>':'<span class="badge b-stock">Выключена</span>'}</div></div>
+      <div class="toolbar" style="margin-top:4px">
+        <button class="btn" id="pf-pass">Сменить пароль</button>
+        <button class="btn ${u.twofa?'':'primary'}" id="pf-2fa">${u.twofa?'Управлять 2FA':'Включить 2FA'}</button>
+      </div>
+    </div>
+    <div class="modal-f"><button class="btn primary" id="m-cancel">Закрыть</button></div>`);
+  $('#m-cancel').onclick=closeModal;
+  $('#pf-pass').onclick=passwordModal;
+  $('#pf-2fa').onclick=twofaModal;
 }
 
 /* ===== 2FA ===== */
