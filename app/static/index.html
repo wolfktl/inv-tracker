@@ -158,6 +158,7 @@ td .sub{color:var(--muted);font-size:12px}
     <button class="tab" data-view="cart">Картриджи</button>
     <button class="tab" data-view="sup">Поставщики</button>
     <button class="tab" data-view="tsd">ТСД</button>
+    <button class="tab" data-view="users">Пользователи</button>
     <button class="tab" data-view="data">Данные</button>
     <button class="tab" data-view="about">О программе</button>
   </nav>
@@ -237,7 +238,19 @@ async function api(method,path,body){
   if(!r.ok){let msg='';try{msg=(await r.json()).detail;}catch(e){}throw new Error(msg||('Ошибка '+r.status));}
   const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text();
 }
-async function reload(){DB=await api('GET','/api/state');paintUser();render();}
+const TAB_PERM={dash:null,about:null,data:null,users:'admin',equip:'equip',people:'people',acts:'acts',cart:'cart',sup:'sup',tsd:'tsd'};
+function applyTabs(){
+  const u=DB.user||{},admin=u.isAdmin,perms=u.perms||[];
+  document.querySelectorAll('.tab').forEach(t=>{
+    const need=TAB_PERM[t.dataset.view];
+    let show=true;
+    if(need==='admin')show=!!admin;else if(need)show=!!admin||perms.includes(need);
+    t.classList.toggle('hidden',!show);
+  });
+  const cur=document.querySelector('.tab[data-view="'+view+'"]');
+  if(cur&&cur.classList.contains('hidden'))view='dash';
+}
+async function reload(){DB=await api('GET','/api/state');paintUser();applyTabs();render();}
 
 /* ===== auth ===== */
 let loginStep=1;
@@ -247,14 +260,9 @@ function hideLogin(){$('#loginOverlay').hidden=true;}
 function paintUser(){
   const ver=$('#appver');if(ver&&DB.version)ver.textContent='v'+DB.version;
   const el=$('#userbox');if(!el)return;
-  const tf=DB.user&&DB.user.twofa;
   el.innerHTML=`<span class="uname">${esc(DB.user&&DB.user.fullName||DB.user&&DB.user.username||'')}</span>
-    <button class="btn sm ghost" id="u-2fa" title="Двухфакторная аутентификация">2FA${tf?' ✓':''}</button>
-    <button class="btn sm ghost" id="u-pass">Пароль</button>
     <button class="btn sm ghost" id="u-logout">Выход</button>`;
   $('#u-logout').onclick=async()=>{await api('POST','/api/logout');location.reload();};
-  $('#u-pass').onclick=passwordModal;
-  $('#u-2fa').onclick=twofaModal;
 }
 async function doLogin(){
   const err=$('#lg-err');err.textContent='';
@@ -413,6 +421,57 @@ function viewActs(){
   </div>`;
 }
 
+
+/* ===== Пользователи (только администратор) ===== */
+let USERS=null;
+const SEC_LABEL={equip:'Техника',people:'Сотрудники',acts:'Акты',cart:'Картриджи',sup:'Поставщики',tsd:'ТСД'};
+async function loadUsers(){try{USERS=await api('GET','/api/users');}catch(e){USERS=[];}if(view==='users')render();}
+function viewUsers(){
+  if(USERS===null){loadUsers();return `<div class="card"><div class="card-h"><h2>Пользователи</h2></div><div class="empty">Загрузка…</div></div>`;}
+  return `
+  <div class="card">
+    <div class="card-h"><h2>Пользователи <span class="tag">${USERS.length}</span></h2><div class="toolbar"><button class="btn primary" id="usr-add">+ Пользователь</button></div></div>
+    <div class="tbl-scroll"><table>
+      <thead><tr><th>Логин</th><th>ФИО</th><th>Роль</th><th>Доступ к разделам</th><th>2FA</th><th></th></tr></thead>
+      <tbody>${USERS.map(x=>`<tr>
+        <td class="mono">${esc(x.username)}</td><td>${esc(x.fullName)||'—'}</td>
+        <td>${x.role==='admin'?'<span class="badge b-issued">Администратор</span>':'Пользователь'}</td>
+        <td>${x.role==='admin'?'<span class="sub">все разделы</span>':((x.perms||[]).map(s=>SEC_LABEL[s]||s).join(', ')||'<span class="sub">—</span>')}</td>
+        <td>${x.twofa?'✓':'—'}</td>
+        <td class="row-actions"><button class="btn sm ghost" data-uact="uedit" data-id="${x.id}">✎</button><button class="btn sm ghost danger" data-uact="udel" data-id="${x.id}">✕</button></td></tr>`).join('')}</tbody>
+    </table></div>
+  </div>`;
+}
+function userModal(id){
+  const x=id?(USERS||[]).find(u=>String(u.id)===String(id)):{username:'',fullName:'',role:'user',perms:[]};
+  const SEC=[['equip','Техника'],['people','Сотрудники'],['acts','Акты'],['cart','Картриджи'],['sup','Поставщики'],['tsd','ТСД']];
+  openModal(`<div class="modal-h"><h3>${id?'Пользователь':'Новый пользователь'}</h3></div>
+    <div class="modal-b">
+      <div class="grid2"><div class="field"><label>Логин</label><input id="u-login" value="${esc(x.username)}" ${id?'readonly':''}></div>
+        <div class="field"><label>ФИО</label><input id="u-fio" value="${esc(x.fullName||'')}"></div></div>
+      <div class="field"><label>${id?'Новый пароль (пусто — не менять)':'Пароль'}</label><input id="u-pass" type="password" autocomplete="new-password"></div>
+      <div class="field"><label>Роль</label><select id="u-role"><option value="user" ${x.role!=='admin'?'selected':''}>Пользователь</option><option value="admin" ${x.role==='admin'?'selected':''}>Администратор</option></select></div>
+      <div class="field" id="u-perms-box"><label>Доступ к разделам</label>
+        <div class="checklist" style="padding:8px">${SEC.map(([k,v])=>`<label class="checkitem" style="border:0;padding:4px 0"><input type="checkbox" value="${k}" ${(x.perms||[]).includes(k)?'checked':''}> <span>${v}</span></label>`).join('')}</div>
+        <p class="hint">Администратору доступны все разделы и настройки — список игнорируется.</p>
+      </div>
+    </div>
+    <div class="modal-f"><button class="btn ghost" id="m-cancel">Отмена</button><button class="btn primary" id="m-save">Сохранить</button></div>`);
+  const syncRole=()=>{$('#u-perms-box').style.opacity=$('#u-role').value==='admin'?'.45':'1';};
+  $('#u-role').onchange=syncRole;syncRole();
+  $('#m-cancel').onclick=closeModal;
+  $('#m-save').onclick=async()=>{
+    const perms=[...document.querySelectorAll('#u-perms-box input:checked')].map(i=>i.value);
+    const data={fullName:$('#u-fio').value.trim(),role:$('#u-role').value,perms};
+    const pw=$('#u-pass').value.trim();if(pw)data.password=pw;
+    try{
+      if(id){await api('PUT','/api/users/'+id,data);}
+      else{data.username=$('#u-login').value.trim();if(!data.username){toast('Укажите логин');return;}if(!pw){toast('Укажите пароль');return;}await api('POST','/api/users',data);}
+      USERS=null;closeModal();render();
+    }catch(e){errToast(e);}
+  };
+}
+async function userDel(id){const x=(USERS||[]).find(u=>String(u.id)===String(id));if(confirm('Удалить пользователя «'+((x&&x.username)||'')+'»?')){try{await api('DELETE','/api/users/'+id);USERS=null;render();}catch(e){errToast(e);}}}
 
 /* ===== ТСД view (справочник терминалов сбора данных) ===== */
 function viewTsd(){
@@ -601,7 +660,20 @@ function printerModal(id){
 
 /* ===== DATA view ===== */
 function viewData(){
-  return `
+  const admin=DB.user&&DB.user.isAdmin;
+  const security=`
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-h"><h2>Безопасность</h2></div>
+    <div class="modal-b">
+      <p class="hint" style="margin-top:0">Аккаунт: <b>${esc((DB.user&&(DB.user.fullName||DB.user.username))||'')}</b> · роль: ${admin?'администратор':'пользователь'}</p>
+      <div class="toolbar">
+        <button class="btn" id="sec-pass">Сменить пароль</button>
+        <button class="btn ${DB.user&&DB.user.twofa?'':'primary'}" id="sec-2fa">${DB.user&&DB.user.twofa?'Двухфакторная аутентификация: включена':'Включить двухфакторную аутентификацию (2FA)'}</button>
+      </div>
+    </div>
+  </div>`;
+  if(!admin) return security;
+  return security + `
   <div class="card" style="margin-bottom:16px">
     <div class="card-h"><h2>Реквизиты для актов (Работодатель)</h2></div>
     <div class="modal-b">
@@ -673,6 +745,7 @@ function render(){
   else if(view==='cart')app.innerHTML=viewCartridges();
   else if(view==='sup')app.innerHTML=viewSuppliers();
   else if(view==='tsd')app.innerHTML=viewTsd();
+  else if(view==='users')app.innerHTML=viewUsers();
   else if(view==='about')app.innerHTML=viewAbout();
   else if(view==='data')app.innerHTML=viewData();
   bindView();
@@ -727,7 +800,15 @@ function bindView(){
     document.querySelectorAll('[data-tact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.tact;
       if(a==='tedit')tsdModal(id);else if(a==='tdel')tsdDel(id);});
   }
+  if(view==='users'){
+    const add=$('#usr-add');if(add)add.onclick=()=>userModal(null);
+    document.querySelectorAll('[data-uact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.uact;
+      if(a==='uedit')userModal(id);else if(a==='udel')userDel(id);});
+  }
   if(view==='data'){
+    $('#sec-pass').onclick=passwordModal;
+    $('#sec-2fa').onclick=twofaModal;
+    if(!$('#o-save'))return;   // не администратор — только карточка «Безопасность»
     $('#o-save').onclick=async()=>{await api('PUT','/api/settings/org',{name:$('#o-name').value.trim(),inn:$('#o-inn').value.trim(),address:$('#o-address').value.trim(),city:$('#o-city').value.trim(),signatory:$('#o-signatory').value.trim(),signatoryShort:$('#o-sigshort').value.trim(),basis:$('#o-basis').value.trim()});await reload();toast('Реквизиты сохранены');};
     $('#d-export').onclick=()=>{window.location='/api/export';};
     $('#d-csv').onclick=exportCSV;
@@ -1126,7 +1207,7 @@ function importJSON(ev){
 }
 
 /* ===== init ===== */
-document.getElementById('tabs').addEventListener('click',e=>{const b=e.target.closest('.tab');if(b){view=b.dataset.view;render();}});
+document.getElementById('tabs').addEventListener('click',e=>{const b=e.target.closest('.tab');if(b){if(b.dataset.view==='users')USERS=null;view=b.dataset.view;render();}});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeModal();const pa=$('#printArea');if(pa)pa.hidden=true;}});
 $('#lg-form').addEventListener('submit',e=>{e.preventDefault();doLogin();});
 boot();

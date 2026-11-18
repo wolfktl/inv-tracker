@@ -38,7 +38,10 @@ from sqlalchemy.dialects.postgresql import JSONB
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 # ---------------------------------------------------------------- config
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
+
+# Разделы, доступ к которым можно выдавать обычным пользователям.
+GRANTABLE_SECTIONS = ["equip", "people", "acts", "cart", "sup", "tsd"]
 BASE = pathlib.Path(__file__).parent
 DB_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg2://inv:inv@db:5432/inventory")
 SECRET_KEY = os.environ.get("SECRET_KEY", "change-me-please-" + secrets.token_hex(8))
@@ -65,6 +68,7 @@ class User(Base):
     totp_secret: Mapped[str] = mapped_column(String(64), default="")
     totp_enabled: Mapped[int] = mapped_column(Integer, default=0)
     recovery_codes: Mapped[Optional[list]] = mapped_column(JSONType, nullable=True)
+    perms: Mapped[Optional[list]] = mapped_column(JSONType, nullable=True)   # разделы для role=user
 
 class Employee(Base):
     __tablename__ = "employees"
@@ -393,7 +397,41 @@ def seed_if_empty():
         db.commit()
 
 # ---------------------------------------------------------------- app
+# Проверка доступа к разделам по пути запроса. "admin" — только администратор,
+# иначе — наличие раздела в perms пользователя (у admin — полный доступ).
+PERM_PREFIXES = [
+    ("/api/users", "admin"), ("/api/settings", "admin"), ("/api/export", "admin"),
+    ("/api/import", "admin"), ("/api/wipe", "admin"),
+    ("/api/equipment", "equip"), ("/api/employees", "people"), ("/api/acts", "acts"),
+    ("/api/cartridges", "cart"), ("/api/printers", "cart"),
+    ("/api/suppliers", "sup"), ("/api/tsd", "tsd"),
+]
+
+async def _perm_dispatch(request: Request, call_next):
+    path = request.url.path
+    need = None
+    for prefix, sec in PERM_PREFIXES:
+        if path == prefix or path.startswith(prefix + "/"):
+            need = sec
+            break
+    if need:
+        uid = request.session.get("uid")
+        if not uid:
+            return JSONResponse({"detail": "Требуется авторизация"}, status_code=401)
+        with SessionLocal() as db:
+            u = db.get(User, uid)
+        if not u:
+            return JSONResponse({"detail": "Сессия недействительна"}, status_code=401)
+        allowed = (u.role == "admin") or (need != "admin" and need in (u.perms or []))
+        if not allowed:
+            return JSONResponse({"detail": "Нет доступа к этому разделу"}, status_code=403)
+    return await call_next(request)
+
 app = FastAPI(title="Учёт техники")
+from starlette.middleware.base import BaseHTTPMiddleware
+# добавляем сначала проверку прав (внутренний слой), затем сессии (внешний слой,
+# выполняется первым) — так в проверке прав доступна request.session.
+app.add_middleware(BaseHTTPMiddleware, dispatch=_perm_dispatch)
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, max_age=60 * 60 * 24 * 14, same_site="lax")
 
 def get_db():
@@ -433,7 +471,13 @@ class LoginBody(BaseModel):
     password: str
 
 def _user_info(u: User):
-    return {"username": u.username, "fullName": u.full_name, "role": u.role, "twofa": bool(u.totp_enabled)}
+    admin = u.role == "admin"
+    return {"username": u.username, "fullName": u.full_name, "role": u.role,
+            "twofa": bool(u.totp_enabled), "isAdmin": admin,
+            "perms": list(GRANTABLE_SECTIONS) if admin else list(u.perms or [])}
+
+def _has(u: User, sec: str) -> bool:
+    return u.role == "admin" or sec in (u.perms or [])
 
 def _verify_2fa(u: User, code: str) -> bool:
     code = (code or "").strip().replace(" ", "").replace("-", "")
@@ -518,6 +562,68 @@ def twofa_disable(body: dict, db: Session = Depends(get_db), u: User = Depends(c
     db.commit()
     return {"ok": True}
 
+# ---------- users management (только администратор; доступ гарантирует middleware)
+def _admin_count(db: Session) -> int:
+    return db.scalar(select(func.count(User.id)).where(User.role == "admin")) or 0
+
+def _user_admin_dict(u: User):
+    return {"id": u.id, "username": u.username, "fullName": u.full_name, "role": u.role,
+            "perms": list(u.perms or []), "twofa": bool(u.totp_enabled)}
+
+@app.get("/api/users")
+def users_list(db: Session = Depends(get_db), cu: User = Depends(current_user)):
+    return [_user_admin_dict(x) for x in db.scalars(select(User).order_by(User.username)).all()]
+
+@app.post("/api/users")
+def user_create(body: dict, db: Session = Depends(get_db), cu: User = Depends(current_user)):
+    uname = (body.get("username") or "").strip()
+    if not uname:
+        raise HTTPException(400, "Укажите логин")
+    if db.scalar(select(User).where(User.username == uname)):
+        raise HTTPException(400, "Логин уже занят")
+    pw = (body.get("password") or "").strip()
+    if len(pw) < 4:
+        raise HTTPException(400, "Пароль слишком короткий")
+    role = "admin" if body.get("role") == "admin" else "user"
+    perms = [s for s in (body.get("perms") or []) if s in GRANTABLE_SECTIONS]
+    nu = User(username=uname, password_hash=hash_pw(pw), full_name=(body.get("fullName") or "").strip(),
+              role=role, perms=perms)
+    db.add(nu); db.commit()
+    return _user_admin_dict(nu)
+
+@app.put("/api/users/{uid}")
+def user_update(uid: int, body: dict, db: Session = Depends(get_db), cu: User = Depends(current_user)):
+    u = db.get(User, uid)
+    if not u:
+        raise HTTPException(404, "Не найдено")
+    if "fullName" in body:
+        u.full_name = (body["fullName"] or "").strip()
+    if "role" in body:
+        new_role = "admin" if body["role"] == "admin" else "user"
+        if u.role == "admin" and new_role != "admin" and _admin_count(db) <= 1:
+            raise HTTPException(400, "Нельзя снять роль у последнего администратора")
+        u.role = new_role
+    if "perms" in body:
+        u.perms = [s for s in (body["perms"] or []) if s in GRANTABLE_SECTIONS]
+    if body.get("password"):
+        if len((body["password"] or "").strip()) < 4:
+            raise HTTPException(400, "Пароль слишком короткий")
+        u.password_hash = hash_pw(body["password"].strip())
+    db.commit()
+    return _user_admin_dict(u)
+
+@app.delete("/api/users/{uid}")
+def user_delete(uid: int, db: Session = Depends(get_db), cu: User = Depends(current_user)):
+    u = db.get(User, uid)
+    if not u:
+        raise HTTPException(404, "Не найдено")
+    if u.id == cu.id:
+        raise HTTPException(400, "Нельзя удалить самого себя")
+    if u.role == "admin" and _admin_count(db) <= 1:
+        raise HTTPException(400, "Нельзя удалить последнего администратора")
+    db.delete(u); db.commit()
+    return {"ok": True}
+
 @app.post("/api/logout")
 def logout(request: Request):
     request.session.clear()
@@ -542,19 +648,31 @@ def change_password(body: dict, request: Request, db: Session = Depends(get_db),
 @app.get("/api/state")
 def state(db: Session = Depends(get_db), u: User = Depends(current_user)):
     org = db.get(Setting, "org")
+    admin = u.role == "admin"
+    def allow(sec):
+        return admin or sec in (u.perms or [])
+    # сотрудники: полный список при доступе к «people»; иначе краткий (для подстановки
+    # имён в технике/актах) если есть смежный раздел; иначе пусто
+    if allow("people"):
+        employees = [emp_dict(e) for e in db.scalars(select(Employee)).all()]
+    elif allow("equip") or allow("acts") or allow("cart"):
+        employees = [{"id": e.id, "fullName": e.full_name, "login": e.login}
+                     for e in db.scalars(select(Employee)).all()]
+    else:
+        employees = []
     return {
         "version": APP_VERSION,
         "org": org.value if org else DEFAULT_ORG,
         "user": _user_info(u),
-        "employees": [emp_dict(e) for e in db.scalars(select(Employee)).all()],
-        "equipment": [eq_dict(e) for e in db.scalars(select(Equipment)).all()],
-        "acts": [act_dict(a) for a in db.scalars(select(Act)).all()],
-        "suppliers": [supplier_dict(s) for s in db.scalars(select(Supplier)).all()],
-        "tsd": [tsd_dict(t) for t in db.scalars(select(Tsd)).all()],
-        "printers": [printer_dict(p) for p in db.scalars(select(Printer)).all()],
-        "cartridges": [cartridge_dict(cg, {p.id: p for p in db.scalars(select(Printer)).all()})
-                       for cg in db.scalars(select(Cartridge)).all()],
-        "notify": _notify_masked(_get_notify(db)),
+        "employees": employees,
+        "equipment": [eq_dict(e) for e in db.scalars(select(Equipment)).all()] if allow("equip") else [],
+        "acts": [act_dict(a) for a in db.scalars(select(Act)).all()] if allow("acts") else [],
+        "suppliers": [supplier_dict(s) for s in db.scalars(select(Supplier)).all()] if (allow("sup") or allow("equip")) else [],
+        "tsd": [tsd_dict(t) for t in db.scalars(select(Tsd)).all()] if allow("tsd") else [],
+        "printers": [printer_dict(p) for p in db.scalars(select(Printer)).all()] if allow("cart") else [],
+        "cartridges": [cartridge_dict(cg, _printers_map(db))
+                       for cg in db.scalars(select(Cartridge)).all()] if allow("cart") else [],
+        "notify": _notify_masked(_get_notify(db)) if admin else None,
     }
 
 # ---------- printers & cartridges
