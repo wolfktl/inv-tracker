@@ -157,7 +157,9 @@ td .sub{color:var(--muted);font-size:12px}
     <button class="tab" data-view="acts">Акты</button>
     <button class="tab" data-view="cart">Картриджи</button>
     <button class="tab" data-view="sup">Поставщики</button>
+    <button class="tab" data-view="tsd">ТСД</button>
     <button class="tab" data-view="data">Данные</button>
+    <button class="tab" data-view="about">О программе</button>
   </nav>
   <div class="userbox" id="userbox"></div>
 </div>
@@ -395,6 +397,60 @@ function viewActs(){
 }
 
 
+/* ===== ТСД view (справочник терминалов сбора данных) ===== */
+function viewTsd(){
+  const list=(DB.tsd||[]).slice().sort((a,b)=>(a.invNo||a.name).localeCompare(b.invNo||b.name,'ru'));
+  return `
+  <div class="card">
+    <div class="card-h"><h2>ТСД <span class="tag">${list.length}</span></h2><div class="toolbar"><button class="btn primary" id="tsd-add">+ ТСД</button></div></div>
+    <div class="tbl-scroll"><table>
+      <thead><tr><th>Инвентарный номер</th><th>Наименование</th><th>Внутренний номер</th><th>Примечание</th><th></th></tr></thead>
+      <tbody>${list.map(t=>`<tr>
+        <td class="mono">${esc(t.invNo)||'—'}</td><td><b>${esc(t.name)||'—'}</b></td><td class="mono">${esc(t.innerNo)||'—'}</td><td>${esc(t.note)||''}</td>
+        <td class="row-actions"><button class="btn sm ghost" data-tact="tedit" data-id="${t.id}">✎</button><button class="btn sm ghost danger" data-tact="tdel" data-id="${t.id}">✕</button></td></tr>`).join('')||'<tr><td colspan="5" class="empty">ТСД нет</td></tr>'}</tbody>
+    </table></div>
+  </div>`;
+}
+function tsdModal(id){
+  const t=id?(DB.tsd||[]).find(x=>x.id===id):{invNo:'',name:'',innerNo:'',note:''};
+  openModal(`<div class="modal-h"><h3>${id?'ТСД':'Новый ТСД'}</h3></div>
+    <div class="modal-b">
+      <div class="field"><label>Инвентарный номер</label><input id="t-inv" value="${esc(t.invNo||'')}"></div>
+      <div class="field"><label>Наименование</label><input id="t-name" value="${esc(t.name||'')}" placeholder="Напр. Zebra TC21"></div>
+      <div class="field"><label>Внутренний номер</label><input id="t-inner" value="${esc(t.innerNo||'')}"></div>
+      <div class="field"><label>Примечание</label><input id="t-note" value="${esc(t.note||'')}"></div>
+    </div>
+    <div class="modal-f"><button class="btn ghost" id="m-cancel">Отмена</button><button class="btn primary" id="m-save">Сохранить</button></div>`);
+  $('#m-cancel').onclick=closeModal;
+  $('#m-save').onclick=async()=>{
+    const data={invNo:$('#t-inv').value.trim(),name:$('#t-name').value.trim(),innerNo:$('#t-inner').value.trim(),note:$('#t-note').value.trim()};
+    if(!(data.name||data.invNo||data.innerNo)){toast('Укажите наименование или номер');return;}
+    try{if(id)await api('PUT','/api/tsd/'+id,data);else await api('POST','/api/tsd',data);closeModal();await reload();}catch(e){errToast(e);}
+  };
+}
+async function tsdDel(id){const t=(DB.tsd||[]).find(x=>x.id===id);if(confirm('Удалить ТСД «'+((t&&(t.name||t.invNo))||'')+'»?')){try{await api('DELETE','/api/tsd/'+id);await reload();}catch(e){errToast(e);}}}
+
+/* ===== О программе ===== */
+function viewAbout(){
+  const v=DB.version||'';
+  return `
+  <div class="card" style="max-width:640px">
+    <div class="card-h"><h2>О программе</h2></div>
+    <div class="modal-b">
+      <p style="font-size:16px;margin-top:0"><b>Учёт техники</b>${v?` <span class="tag">v${esc(v)}</span>`:''}</p>
+      <p class="hint" style="margin-top:0">Веб-приложение для инвентаризации ИТ-оборудования: учёт ПК, ноутбуков, мониторов и пр., привязка к сотруднику или рабочему месту, штрих-коды и печать этикеток, акты приёма-передачи (печать/PDF/.docx), учёт картриджей с уведомлениями, справочники поставщиков и ТСД.</p>
+      <table style="margin-top:8px">
+        <tbody>
+          <tr><td style="color:var(--muted);width:160px">Версия</td><td><b>${esc(v)||'—'}</b></td></tr>
+          <tr><td style="color:var(--muted)">Стек</td><td>FastAPI · PostgreSQL · Alembic · Docker</td></tr>
+          <tr><td style="color:var(--muted)">Миграции схемы</td><td>Alembic (автоприменение при старте)</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">Версия задаётся в коде: константа <span class="mono">APP_VERSION</span> в <span class="mono">app/main.py</span>.</p>
+    </div>
+  </div>`;
+}
+
 /* ===== SUPPLIERS view ===== */
 function viewSuppliers(){
   const sups=(DB.suppliers||[]).slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
@@ -599,6 +655,8 @@ function render(){
   else if(view==='acts')app.innerHTML=viewActs();
   else if(view==='cart')app.innerHTML=viewCartridges();
   else if(view==='sup')app.innerHTML=viewSuppliers();
+  else if(view==='tsd')app.innerHTML=viewTsd();
+  else if(view==='about')app.innerHTML=viewAbout();
   else if(view==='data')app.innerHTML=viewData();
   bindView();
 }
@@ -646,6 +704,11 @@ function bindView(){
     $('#sup-add').onclick=()=>supplierModal(null);
     document.querySelectorAll('[data-sact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.sact;
       if(a==='sedit')supplierModal(id);else if(a==='sdel')supplierDel(id);});
+  }
+  if(view==='tsd'){
+    $('#tsd-add').onclick=()=>tsdModal(null);
+    document.querySelectorAll('[data-tact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.tact;
+      if(a==='tedit')tsdModal(id);else if(a==='tdel')tsdDel(id);});
   }
   if(view==='data'){
     $('#o-save').onclick=async()=>{await api('PUT','/api/settings/org',{name:$('#o-name').value.trim(),inn:$('#o-inn').value.trim(),address:$('#o-address').value.trim(),city:$('#o-city').value.trim(),signatory:$('#o-signatory').value.trim(),signatoryShort:$('#o-sigshort').value.trim(),basis:$('#o-basis').value.trim()});await reload();toast('Реквизиты сохранены');};
