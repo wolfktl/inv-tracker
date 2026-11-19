@@ -38,7 +38,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 # ---------------------------------------------------------------- config
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 
 # Разделы, доступ к которым можно выдавать обычным пользователям.
 GRANTABLE_SECTIONS = ["equip", "people", "acts", "cart", "sup", "tsd"]
@@ -699,12 +699,31 @@ def state(db: Session = Depends(get_db), u: User = Depends(current_user)):
                      for e in db.scalars(select(Employee)).all()]
     else:
         employees = []
+    # техника: помечаем, есть ли по единице акт выдачи (связь по id позиции акта, запасной — по инв.№)
+    if allow("equip"):
+        act_label = {}
+        for a in db.scalars(select(Act).where(Act.kind == "issue")).all():
+            lbl = act_number(a)
+            for it in (a.items or []):
+                if it.get("id"):
+                    act_label[("id", it["id"])] = lbl
+                if it.get("invno"):
+                    act_label[("inv", it["invno"])] = lbl
+        equipment_list = []
+        for e in db.scalars(select(Equipment)).all():
+            d = eq_dict(e)
+            lbl = act_label.get(("id", e.id)) or (act_label.get(("inv", e.invno)) if e.invno else None)
+            d["hasAct"] = bool(lbl)
+            d["actLabel"] = lbl or ""
+            equipment_list.append(d)
+    else:
+        equipment_list = []
     return {
         "version": APP_VERSION,
         "org": org.value if org else DEFAULT_ORG,
         "user": _user_info(u),
         "employees": employees,
-        "equipment": [eq_dict(e) for e in db.scalars(select(Equipment)).all()] if allow("equip") else [],
+        "equipment": equipment_list,
         "acts": [act_dict(a) for a in db.scalars(select(Act)).all()] if allow("acts") else [],
         "suppliers": [supplier_dict(s) for s in db.scalars(select(Supplier)).all()] if (allow("sup") or allow("equip")) else [],
         "tsd": [tsd_dict(t) for t in db.scalars(select(Tsd)).all()] if allow("tsd") else [],
@@ -1098,10 +1117,22 @@ def _next_inv(db: Session) -> str:
     db.add(seq)
     return "%04d" % n
 
-def _make_act(db: Session, kind: str, emp: Employee, items: List[Equipment], who: str) -> Act:
-    a = Act(no=_next_act_no(db), kind=kind, date=datetime.date.today().strftime("%d.%m.%Y"),
+def _norm_date(s):
+    s = (s or "").strip()
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", s)      # yyyy-mm-dd (из <input type=date>)
+    if m:
+        return f"{m.group(3)}.{m.group(2)}.{m.group(1)}"
+    if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", s):          # уже dd.mm.yyyy
+        return s
+    return None
+
+def act_number(a) -> str:
+    return f"{a.no}-" + (a.date or "").replace(".", "/")  # X-дд/мм/гггг
+
+def _make_act(db: Session, kind: str, emp: Employee, items: List[Equipment], who: str, date: str = None) -> Act:
+    a = Act(no=_next_act_no(db), kind=kind, date=_norm_date(date) or datetime.date.today().strftime("%d.%m.%Y"),
             emp_id=emp.id if emp else None, emp_name=emp.full_name if emp else "",
-            items=[{"name": i.name, "type": i.type, "invno": i.invno, "serial": i.serial,
+            items=[{"id": i.id, "name": i.name, "type": i.type, "invno": i.invno, "serial": i.serial,
                     "workplace": i.workplace, "cost": i.cost} for i in items], created_by=who)
     db.add(a)
     return a
@@ -1125,7 +1156,7 @@ def eq_issue(qid: str, body: dict, db: Session = Depends(get_db), u: User = Depe
         q.emp_id = emp.id; q.holder_text = ""; q.workplace = (body.get("workplace") or "").strip()
         q.assign_type = "employee"; q.status = "issued"
         if body.get("makeAct"):
-            act = _make_act(db, "issue", emp, [q], u.username)
+            act = _make_act(db, "issue", emp, [q], u.username, date=body.get("date"))
     db.commit()
     return {"equipment": eq_dict(q), "act": act_dict(act) if act else None}
 
@@ -1171,7 +1202,7 @@ def act_create(body: dict, db: Session = Depends(get_db), u: User = Depends(curr
             q.emp_id = emp.id; q.status = "issued"; q.holder_text = ""; q.assign_type = "employee"
         else:
             q.emp_id = None; q.status = "stock"; q.workplace = ""; q.assign_type = ""
-    act = _make_act(db, kind, emp, items, u.username)
+    act = _make_act(db, kind, emp, items, u.username, date=body.get("date"))
     db.commit()
     return act_dict(act)
 
@@ -1202,7 +1233,7 @@ def build_act_docx(org: dict, emp, act) -> bytes:
     p = doc.add_paragraph(); r = p.add_run(f"{org.get('name','')}" + (f", ИНН {org.get('inn','')}" if org.get("inn") else "")); r.bold = True
     if org.get("address"):
         doc.add_paragraph(org["address"])
-    for line in [f"Акт № {act.no}", "приема-передачи", "материальных ценностей работнику" + (" (возврат)" if is_ret else "")]:
+    for line in [f"Акт № {act_number(act)}", "приема-передачи", "материальных ценностей работнику" + (" (возврат)" if is_ret else "")]:
         tp = doc.add_paragraph(); tp.alignment = WD_ALIGN_PARAGRAPH.CENTER; tr = tp.add_run(line); tr.bold = True
     cp = doc.add_paragraph(); cp.add_run(f"г. {org.get('city','')}"); cp.add_run("\t\t\t\t"); cp.add_run(f"«{day}» {mon} {yr} г.")
 

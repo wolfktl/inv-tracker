@@ -397,20 +397,27 @@ function viewEquip(){
       </div>
     </div>
     <div class="tbl-scroll"><table>
-      <thead><tr><th>Тип</th><th>Наименование</th><th>Инв. №</th><th class="hide-sm">S/N</th><th>Статус</th><th>Сотрудник / место</th><th></th></tr></thead>
-      <tbody>${list.map(rowEquip).join('')||'<tr><td colspan="7" class="empty">Ничего не найдено</td></tr>'}</tbody>
+      <thead><tr><th>Тип</th><th>Наименование</th><th>Инв. №</th><th class="hide-sm">S/N</th><th>Статус</th><th>Цена</th><th>Акт</th><th>Сотрудник / место</th><th></th></tr></thead>
+      <tbody>${list.map(rowEquip).join('')||'<tr><td colspan="9" class="empty">Ничего не найдено</td></tr>'}</tbody>
     </table></div>
   </div>`;
 }
 function rowEquip(e){
   const holder=holderLabel(e);
   const wp=(e.assignType!=='workplace'&&e.workplace)?`<div class="sub">${esc(e.workplace)}</div>`:'';
-  return `<tr>
+  const noCost=!e.cost, needAct=(e.status==='issued'&&!e.hasAct);
+  const priceCell=e.cost?esc(e.cost):'<span style="color:var(--red);font-weight:600">нет</span>';
+  const actCell=e.hasAct
+    ?`<span style="color:var(--ok);font-weight:600">${esc(e.actLabel)||'✓'}</span>`
+    :(e.status==='issued'?'<span style="color:var(--red);font-weight:600">нет</span>':'<span class="sub">—</span>');
+  return `<tr${(noCost||needAct)?' style="background:#fff6f3"':''}>
     <td><span class="tag">${esc(e.type)}</span></td>
     <td>${esc(e.name)}${e.innerName?`<div class="sub">${esc(e.innerName)}</div>`:''}${e.location?`<div class="sub">${esc(e.location)}</div>`:''}</td>
     <td class="mono">${esc(e.invno)||'—'}</td>
     <td class="mono hide-sm">${esc(e.serial)||'—'}</td>
     <td><span class="badge ${STATUS_CLS[e.status]}">${STATUS[e.status]}</span></td>
+    <td>${priceCell}</td>
+    <td>${actCell}</td>
     <td>${holder?esc(holder):'<span class="sub">—</span>'}${wp}</td>
     <td class="row-actions">
       <button class="btn sm ghost" data-act="label" data-id="${e.id}" title="Этикетка 15×50">🏷</button>
@@ -470,7 +477,7 @@ function viewActs(){
       <tbody>${list.map(a=>{
         const e=empById(a.empId);
         return `<tr>
-          <td><b>№ ${esc(a.no)}</b></td>
+          <td><b>№ ${esc(actNumber(a))}</b></td>
           <td>${esc(a.date)}</td>
           <td>${a.kind==='return'?'<span class="badge b-stock">Возврат</span>':'<span class="badge b-issued">Выдача</span>'}</td>
           <td>${esc(e?e.fullName:(a.empName||'—'))}</td>
@@ -1056,6 +1063,7 @@ function assignModal(id){
           <select id="i-emp" size="6" style="height:auto">${empOptionsHTML(e.empId,'')}</select></div>
         <div class="field"><label>Рабочее место (необязательно)</label><input id="i-wp" value="${esc(e.workplace)}" placeholder="Напр. Офис Москва, каб. 3 / удалённо"></div>
         <label class="checkitem" style="border:0;padding:0;margin-top:4px"><input type="checkbox" id="i-act" checked> <span>Сразу сформировать акт выдачи</span></label>
+        <div class="field" style="margin-top:8px"><label>Дата акта</label><input id="i-date" type="date" value="${todayISO()}"></div>
       </div>
       <div id="i-wp-box" class="hidden">
         <div class="field"><label>Рабочее место</label><input id="i-wp2" value="${esc(e.workplace)}" placeholder="Напр. Переговорная «Берлин», стол 2"></div>
@@ -1073,7 +1081,7 @@ function assignModal(id){
     try{
       let body;
       if(mode==='workplace'){const wp=$('#i-wp2').value.trim();if(!wp){toast('Укажите рабочее место');return;}body={mode,workplace:wp};}
-      else{const empId=$('#i-emp').value;if(!empId){toast('Выберите сотрудника');return;}body={mode,empId,workplace:$('#i-wp').value.trim(),makeAct:$('#i-act').checked};}
+      else{const empId=$('#i-emp').value;if(!empId){toast('Выберите сотрудника');return;}body={mode,empId,workplace:$('#i-wp').value.trim(),makeAct:$('#i-act').checked,date:$('#i-date').value};}
       const res=await api('POST','/api/equipment/'+id+'/issue',body);
       closeModal();await reload();if(res.act)printAct(res.act);
     }catch(e){errToast(e);}
@@ -1180,10 +1188,11 @@ function actModal(){
     <div class="modal-b">
       <div class="grid2">
         <div class="field"><label>Тип акта</label><select id="a-kind"><option value="issue">Выдача</option><option value="return">Возврат</option></select></div>
-        <div class="field"><label>Сотрудник</label>
-          <input id="a-emp-q" class="search" placeholder="Поиск: ФИО, логин…" style="width:100%;margin-bottom:6px">
-          <select id="a-emp" size="6" style="height:auto">${empOptionsHTML('','')}</select></div>
+        <div class="field"><label>Дата акта</label><input id="a-date" type="date" value="${todayISO()}"></div>
       </div>
+      <div class="field"><label>Сотрудник</label>
+        <input id="a-emp-q" class="search" placeholder="Поиск: ФИО, логин…" style="width:100%;margin-bottom:6px">
+        <select id="a-emp" size="6" style="height:auto">${empOptionsHTML('','')}</select></div>
       <div class="field"><label>Позиции</label><div id="a-items" class="checklist"><p class="hint" style="padding:12px">Выберите сотрудника.</p></div>
         <p class="hint">Для выдачи показывается техника на складе и уже закреплённая за сотрудником; для возврата — закреплённая за ним.</p></div>
     </div>
@@ -1200,7 +1209,7 @@ function actModal(){
     const empId=$('#a-emp').value;if(!empId){toast('Выберите сотрудника');return;}
     const ids=[...document.querySelectorAll('#a-items input:checked')].map(i=>i.value);
     if(!ids.length){toast('Отметьте хотя бы одну позицию');return;}
-    try{const act=await api('POST','/api/acts',{kind:$('#a-kind').value,empId,itemIds:ids});closeModal();view='acts';await reload();printAct(act);}catch(e){errToast(e);}
+    try{const act=await api('POST','/api/acts',{kind:$('#a-kind').value,empId,itemIds:ids,date:$('#a-date').value});closeModal();view='acts';await reload();printAct(act);}catch(e){errToast(e);}
   };
 }
 
@@ -1296,6 +1305,8 @@ function wipeModal(){
 }
 
 /* ===== print act (шаблон ИП — акт приёма-передачи материальных ценностей) ===== */
+function actNumber(a){return a.no+'-'+((a.date||'').replace(/\./g,'/'));}
+function todayISO(){const d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);}
 function costNum(s){const d=(s||'').toString().replace(/[^0-9]/g,'');return d?parseInt(d,10):0;}
 function fmtMoney(n){return n.toLocaleString('ru-RU');}
 function printAct(a){
@@ -1326,7 +1337,7 @@ function printAct(a){
     </tr>`).join('');
   const html=`
     <div class="print-toolbar">
-      <span class="sp">Акт № ${esc(a.no)}${isReturn?' (возврат)':''} — предпросмотр</span>
+      <span class="sp">Акт № ${esc(actNumber(a))}${isReturn?' (возврат)':''} — предпросмотр</span>
       <button class="btn" onclick="window.print()">🖨 Печать / PDF</button>
       <button class="btn" onclick="window.location='/api/acts/${a.id}/docx'">⬇ Word (.docx)</button>
       <button class="btn" onclick="document.getElementById('printArea').hidden=true">Закрыть</button>
@@ -1337,7 +1348,7 @@ function printAct(a){
         ${org.address?`<div>${esc(org.address)}</div>`:''}
       </div>
       <div class="akt-title">
-        <div>Акт № ${esc(a.no)}</div>
+        <div>Акт № ${esc(actNumber(a))}</div>
         <div>приема-передачи</div>
         <div>материальных ценностей работнику${isReturn?' (возврат)':''}</div>
       </div>
