@@ -33,11 +33,20 @@ a{color:var(--brand);text-decoration:none}
 .wrap{max-width:1180px;margin:0 auto;padding:20px}
 
 /* stats */
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
-.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
-.stat .n{font-size:26px;font-weight:700}
-.stat .l{color:var(--muted);font-size:12px;margin-top:2px}
-.stat.ok .n{color:var(--ok)} .stat.warn .n{color:var(--warn)} .stat.brand .n{color:var(--brand)} .stat.red .n{color:var(--red)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:12px;margin-bottom:16px}
+.stat{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow)}
+.stat .ic{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;background:var(--chip);color:var(--muted)}
+.stat .ic svg{width:22px;height:22px;display:block}
+.stat .n{font-size:24px;font-weight:700;line-height:1.05}
+.stat .l{color:var(--muted);font-size:12px;margin-top:3px}
+.stat.brand .ic{background:#e8effe;color:var(--brand)}
+.stat.ok .ic{background:#e9f9ef;color:var(--ok)}
+.stat.warn .ic{background:#fef6e7;color:var(--warn)}
+.stat.red .ic{background:#fdecec;color:var(--red)} .stat.red .n{color:var(--red)}
+.parkbar{height:14px;border-radius:999px;background:var(--chip);overflow:hidden;display:flex}
+.parkbar>span{height:100%}
+.park-legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12.5px;color:var(--ink)}
+.park-legend .dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
 
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
 .card-h{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
@@ -296,22 +305,48 @@ async function boot(){
 
 
 /* ===== DASH ===== */
+const ICONS={
+  laptop:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M2 20h20"/></svg>',
+  check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  box:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></svg>',
+  wrench:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7a4 4 0 0 1-5.1 4.9L5 16.8 7.2 19l4.9-4.9A4 4 0 0 0 17 9l-2 2-2-2z"/></svg>',
+  users:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.2a3.2 3.2 0 0 1 0 6"/><path d="M18 20a5.8 5.8 0 0 0-3-5"/></svg>',
+  printer:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9V3h10v6"/><rect x="4" y="9" width="16" height="8" rx="2"/><rect x="7" y="14" width="10" height="6"/><circle cx="17" cy="12" r=".6" fill="currentColor"/></svg>',
+  barcode:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 5v14M8 5v14M11 5v14M14 5v14M17 5v14M20 5v14"/></svg>',
+  drop:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3s6 6.4 6 10.5A6 6 0 0 1 6 13.5C6 9.4 12 3 12 3z"/></svg>',
+  doc:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6v20h12V6z"/><path d="M14 2v4h4"/><path d="M9 13h6M9 17h6"/></svg>'
+};
+function statCard(cls,icon,n,label){return `<div class="stat ${cls}"><div class="ic">${ICONS[icon]||''}</div><div><div class="n">${n}</div><div class="l">${label}</div></div></div>`;}
 function viewDash(){
-  const q=DB.equipment;
+  const q=DB.equipment||[];
   const total=q.length, issued=q.filter(e=>e.status==='issued').length,
         stock=q.filter(e=>e.status==='stock').length, repair=q.filter(e=>e.status==='repair').length,
         off=q.filter(e=>e.status==='writeoff').length;
+  const low=(DB.cartridges||[]).filter(c=>c.low).length;
   const byType=TYPES.map(t=>[t,q.filter(e=>e.type===t).length]).filter(x=>x[1]);
+  const seg=[['issued',issued,'#16a34a','Выдано'],['stock',stock,'#64748b','На складе'],['repair',repair,'#d97706','В ремонте'],['writeoff',off,'#dc2626','Списано']];
+  const parkTotal=total||1;
   return `
+  <p class="hint" style="margin:0 0 14px;font-size:14px">Всего на учёте <b style="color:var(--ink)">${total}</b> ед. техники${issued?` · выдано ${issued}`:''}${low?` · <span style="color:var(--red)">картриджей ниже минимума: ${low}</span>`:''}</p>
   <div class="stats">
-    <div class="stat brand"><div class="n">${total}</div><div class="l">Единиц техники</div></div>
-    <div class="stat ok"><div class="n">${issued}</div><div class="l">Выдано сотрудникам</div></div>
-    <div class="stat"><div class="n">${stock}</div><div class="l">На складе</div></div>
-    <div class="stat warn"><div class="n">${repair}</div><div class="l">В ремонте</div></div>
-    <div class="stat"><div class="n">${DB.employees.length}</div><div class="l">Сотрудников</div></div>
-    <div class="stat"><div class="n">${DB.acts.length}</div><div class="l">Актов</div></div>
-    ${(()=>{const low=(DB.cartridges||[]).filter(c=>c.low).length;return `<div class="stat ${low?'red':''}"><div class="n">${low}</div><div class="l">Картриджей ниже минимума</div></div>`;})()}
+    ${statCard('brand','laptop',total,'Единиц техники')}
+    ${statCard('ok','check',issued,'Выдано сотрудникам')}
+    ${statCard('','box',stock,'На складе')}
+    ${statCard('warn','wrench',repair,'В ремонте')}
+    ${statCard('','users',DB.employees.length,'Сотрудников')}
+    ${statCard('','printer',(DB.printers||[]).length,'Принтеров')}
+    ${statCard('','barcode',(DB.tsd||[]).length,'ТСД')}
+    ${statCard('','drop',(DB.cartridges||[]).length,'Картриджей')}
+    ${statCard('','doc',DB.acts.length,'Актов')}
+    ${statCard(low?'red':'','drop',low,'Картриджей ниже минимума')}
   </div>
+  ${total?`<div class="card" style="margin-bottom:16px">
+    <div class="card-h"><h2>Состояние парка</h2></div>
+    <div class="modal-b">
+      <div class="parkbar">${seg.filter(s=>s[1]).map(s=>`<span style="width:${(s[1]/parkTotal*100).toFixed(1)}%;background:${s[2]}"></span>`).join('')}</div>
+      <div class="park-legend">${seg.map(s=>`<span><span class="dot" style="background:${s[2]}"></span>${s[3]}: <b>${s[1]}</b></span>`).join('')}</div>
+    </div>
+  </div>`:''}
   <div class="card">
     <div class="card-h"><h2>По типам оборудования</h2></div>
     <div class="tbl-scroll"><table><thead><tr><th>Тип</th><th>Всего</th><th>Выдано</th><th>На складе</th><th>В ремонте</th></tr></thead><tbody>
