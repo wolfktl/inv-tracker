@@ -166,21 +166,29 @@ td .sub{color:var(--muted);font-size:12px}
   <div class="brand"><span class="dot"></span>Учёт техники <span id="appver" style="font-weight:400;color:var(--muted);font-size:11px"></span></div>
   <nav class="tabs" id="tabs">
     <button class="tab active" data-view="dash">Обзор</button>
-    <div class="tab-dd" id="dd-ref">
-      <button class="tab" id="dd-ref-btn" type="button">Справочники ▾</button>
-      <div class="dd-menu" id="dd-ref-menu">
+    <div class="tab-dd">
+      <button class="tab dd-toggle" type="button">Справочники ▾</button>
+      <div class="dd-menu">
         <button class="dd-item" data-view="equip">Техника</button>
         <button class="dd-item" data-view="people">Сотрудники</button>
         <button class="dd-item" data-view="sup">Поставщики</button>
         <button class="dd-item" data-view="tsd">ТСД</button>
         <button class="dd-item" data-view="prn">Принтеры</button>
         <button class="dd-item" data-view="notif">Уведомления</button>
+        <button class="dd-item" data-view="loc">Локации</button>
       </div>
     </div>
     <button class="tab" data-view="acts">Акты</button>
     <button class="tab" data-view="cart">Картриджи</button>
-    <button class="tab" data-view="users">Пользователи</button>
-    <button class="tab" data-view="data">Данные</button>
+    <div class="tab-dd">
+      <button class="tab dd-toggle" type="button">Настройки ▾</button>
+      <div class="dd-menu">
+        <button class="dd-item" data-view="req">Реквизиты для актов</button>
+        <button class="dd-item" data-view="notifset">Уведомления (транспорт)</button>
+        <button class="dd-item" data-view="backup">Данные и резервные копии</button>
+        <button class="dd-item" data-view="users">Пользователи</button>
+      </div>
+    </div>
     <button class="tab" data-view="about">О программе</button>
   </nav>
   <div class="userbox" id="userbox"></div>
@@ -259,14 +267,16 @@ async function api(method,path,body){
   if(!r.ok){let msg='';try{msg=(await r.json()).detail;}catch(e){}throw new Error(msg||('Ошибка '+r.status));}
   const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text();
 }
-const TAB_PERM={dash:null,about:null,data:'admin',users:'admin',equip:'equip',people:'people',acts:'acts',cart:'cart',prn:'cart',notif:'cart',sup:'sup',tsd:'tsd'};
+const TAB_PERM={dash:null,about:null,req:'admin',notifset:'admin',backup:'admin',users:'admin',equip:'equip',people:'people',acts:'acts',cart:'cart',prn:'cart',notif:'cart',sup:'sup',tsd:'tsd',loc:'equip'};
 function applyTabs(){
   const u=DB.user||{},admin=u.isAdmin,perms=u.perms||[];
   const can=need=>!need?true:(need==='admin'?!!admin:(!!admin||perms.includes(need)));
   document.querySelectorAll('.tab[data-view]').forEach(t=>t.classList.toggle('hidden',!can(TAB_PERM[t.dataset.view])));
-  let anyRef=false;
-  document.querySelectorAll('#dd-ref-menu .dd-item').forEach(it=>{const show=can(TAB_PERM[it.dataset.view]);it.classList.toggle('hidden',!show);if(show)anyRef=true;});
-  const dd=document.getElementById('dd-ref');if(dd)dd.classList.toggle('hidden',!anyRef);
+  document.querySelectorAll('.tab-dd').forEach(dd=>{
+    let any=false;
+    dd.querySelectorAll('.dd-item').forEach(it=>{const show=can(TAB_PERM[it.dataset.view]);it.classList.toggle('hidden',!show);if(show)any=true;});
+    dd.classList.toggle('hidden',!any);
+  });
   const need=TAB_PERM[view];
   if(need&&!can(need))view='dash';
 }
@@ -534,26 +544,27 @@ function viewTsd(){
   <div class="card">
     <div class="card-h"><h2>ТСД <span class="tag">${list.length}</span></h2><div class="toolbar"><button class="btn primary" id="tsd-add">+ ТСД</button></div></div>
     <div class="tbl-scroll"><table>
-      <thead><tr><th>Инвентарный номер</th><th>Наименование</th><th>Внутренний номер</th><th>Примечание</th><th></th></tr></thead>
+      <thead><tr><th>Инвентарный номер</th><th>Наименование</th><th>Внутренний номер</th><th>Локация</th><th>Примечание</th><th></th></tr></thead>
       <tbody>${list.map(t=>`<tr>
-        <td class="mono">${esc(t.invNo)||'—'}</td><td><b>${esc(t.name)||'—'}</b></td><td class="mono">${esc(t.innerNo)||'—'}</td><td>${esc(t.note)||''}</td>
-        <td class="row-actions"><button class="btn sm ghost" data-tact="tedit" data-id="${t.id}">✎</button><button class="btn sm ghost danger" data-tact="tdel" data-id="${t.id}">✕</button></td></tr>`).join('')||'<tr><td colspan="5" class="empty">ТСД нет</td></tr>'}</tbody>
+        <td class="mono">${esc(t.invNo)||'—'}</td><td><b>${esc(t.name)||'—'}</b></td><td class="mono">${esc(t.innerNo)||'—'}</td><td>${esc(t.location)||'—'}</td><td>${esc(t.note)||''}</td>
+        <td class="row-actions"><button class="btn sm ghost" data-tact="tedit" data-id="${t.id}">✎</button><button class="btn sm ghost danger" data-tact="tdel" data-id="${t.id}">✕</button></td></tr>`).join('')||'<tr><td colspan="6" class="empty">ТСД нет</td></tr>'}</tbody>
     </table></div>
   </div>`;
 }
 function tsdModal(id){
-  const t=id?(DB.tsd||[]).find(x=>x.id===id):{invNo:'',name:'',innerNo:'',note:''};
+  const t=id?(DB.tsd||[]).find(x=>x.id===id):{invNo:'',name:'',innerNo:'',location:'',note:''};
   openModal(`<div class="modal-h"><h3>${id?'ТСД':'Новый ТСД'}</h3></div>
     <div class="modal-b">
       <div class="field"><label>Инвентарный номер</label><input id="t-inv" value="${esc(t.invNo||'')}"></div>
       <div class="field"><label>Наименование</label><input id="t-name" value="${esc(t.name||'')}" placeholder="Напр. Zebra TC21"></div>
       <div class="field"><label>Внутренний номер</label><input id="t-inner" value="${esc(t.innerNo||'')}"></div>
+      <div class="field"><label>Локация</label><input id="t-loc" list="loclist" value="${esc(t.location||'')}" placeholder="выберите или впишите">${locDatalist()}</div>
       <div class="field"><label>Примечание</label><input id="t-note" value="${esc(t.note||'')}"></div>
     </div>
     <div class="modal-f"><button class="btn ghost" id="m-cancel">Отмена</button><button class="btn primary" id="m-save">Сохранить</button></div>`);
   $('#m-cancel').onclick=closeModal;
   $('#m-save').onclick=async()=>{
-    const data={invNo:$('#t-inv').value.trim(),name:$('#t-name').value.trim(),innerNo:$('#t-inner').value.trim(),note:$('#t-note').value.trim()};
+    const data={invNo:$('#t-inv').value.trim(),name:$('#t-name').value.trim(),innerNo:$('#t-inner').value.trim(),location:$('#t-loc').value.trim(),note:$('#t-note').value.trim()};
     if(!(data.name||data.invNo||data.innerNo)){toast('Укажите наименование или номер');return;}
     try{if(id)await api('PUT','/api/tsd/'+id,data);else await api('POST','/api/tsd',data);closeModal();await reload();}catch(e){errToast(e);}
   };
@@ -580,6 +591,36 @@ function viewAbout(){
     </div>
   </div>`;
 }
+
+/* ===== Локации (справочник) ===== */
+function locDatalist(){return `<datalist id="loclist">${(DB.locations||[]).map(l=>`<option value="${esc(l.name)}">`).join('')}</datalist>`;}
+function viewLocations(){
+  const list=(DB.locations||[]).slice().sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+  return `
+  <div class="card">
+    <div class="card-h"><h2>Локации <span class="tag">${list.length}</span></h2><div class="toolbar"><button class="btn primary" id="loc-add">+ Локация</button></div></div>
+    <div class="tbl-scroll"><table>
+      <thead><tr><th>Название</th><th>Примечание</th><th>Техники</th><th>ТСД</th><th>Принтеров</th><th></th></tr></thead>
+      <tbody>${list.map(l=>{const te=(DB.equipment||[]).filter(e=>e.location===l.name).length,tt=(DB.tsd||[]).filter(t=>t.location===l.name).length,tp=(DB.printers||[]).filter(p=>p.location===l.name).length;
+        return `<tr><td><b>${esc(l.name)}</b></td><td>${esc(l.note)||''}</td><td>${te||'<span class="sub">—</span>'}</td><td>${tt||'<span class="sub">—</span>'}</td><td>${tp||'<span class="sub">—</span>'}</td>
+          <td class="row-actions"><button class="btn sm ghost" data-lact="ledit" data-id="${l.id}">✎</button><button class="btn sm ghost danger" data-lact="ldel" data-id="${l.id}">✕</button></td></tr>`;
+      }).join('')||'<tr><td colspan="6" class="empty">Локаций нет</td></tr>'}</tbody>
+    </table></div>
+    <div class="modal-b"><p class="hint" style="margin:0">Локации подставляются при выборе в технике, ТСД и принтерах. Можно вписать и свою вручную.</p></div>
+  </div>`;
+}
+function locModal(id){
+  const l=id?(DB.locations||[]).find(x=>x.id===id):{name:'',note:''};
+  openModal(`<div class="modal-h"><h3>${id?'Локация':'Новая локация'}</h3></div>
+    <div class="modal-b">
+      <div class="field"><label>Название</label><input id="l-name" value="${esc(l.name)}" placeholder="Напр. Москва, офис 3"></div>
+      <div class="field"><label>Примечание</label><input id="l-note" value="${esc(l.note||'')}"></div>
+    </div>
+    <div class="modal-f"><button class="btn ghost" id="m-cancel">Отмена</button><button class="btn primary" id="m-save">Сохранить</button></div>`);
+  $('#m-cancel').onclick=closeModal;
+  $('#m-save').onclick=async()=>{const data={name:$('#l-name').value.trim(),note:$('#l-note').value.trim()};if(!data.name){toast('Укажите название');return;}try{if(id)await api('PUT','/api/locations/'+id,data);else await api('POST','/api/locations',data);closeModal();await reload();}catch(e){errToast(e);}};
+}
+async function locDel(id){const l=(DB.locations||[]).find(x=>x.id===id);if(confirm('Удалить локацию «'+((l&&l.name)||'')+'»? У записей локация останется текстом.')){try{await api('DELETE','/api/locations/'+id);await reload();}catch(e){errToast(e);}}}
 
 /* ===== SUPPLIERS view ===== */
 function viewSuppliers(){
@@ -742,7 +783,7 @@ function printerModal(id){
       <div class="field"><label>Название</label><input id="pr-name" value="${esc(p.name)}" placeholder="HP LaserJet M428"></div>
       <div class="grid2"><div class="field"><label>Модель</label><input id="pr-model" value="${esc(p.model)}"></div>
         <div class="field"><label>Инв. №</label><input id="pr-inv" value="${esc(p.invNo)}"></div></div>
-      <div class="field"><label>Локация</label><input id="pr-loc" value="${esc(p.location)}"></div>
+      <div class="field"><label>Локация</label><input id="pr-loc" list="loclist" value="${esc(p.location)}" placeholder="выберите или впишите">${locDatalist()}</div>
       <div class="field"><label>Уведомление (кому слать о низком остатке картриджа)</label>
         <select id="pr-notify"><option value="">— по умолчанию (глобальные настройки)</option>${(DB.notifications||[]).map(n=>`<option value="${n.id}" ${p.notifyId===n.id?'selected':''}>${esc(n.name)}${n.enabled?'':' (выкл.)'}</option>`).join('')}</select>
         <p class="hint">Список адресатов — «Справочники → Уведомления».</p>
@@ -759,9 +800,9 @@ function printerModal(id){
 }
 
 /* ===== DATA view ===== */
-function viewData(){
+function viewReq(){
   return `
-  <div class="card" style="margin-bottom:16px">
+  <div class="card">
     <div class="card-h"><h2>Реквизиты для актов (Работодатель)</h2></div>
     <div class="modal-b">
       <div class="field"><label>Наименование (Работодатель)</label><input id="o-name" value="${esc(DB.org.name||'')}" placeholder="ИП Эстрин Кирилл Вадимович"></div>
@@ -777,9 +818,10 @@ function viewData(){
       <div class="field"><label>Действует на основании</label><input id="o-basis" value="${esc(DB.org.basis||'')}" placeholder="Свидетельства о регистрации"></div>
       <button class="btn primary" id="o-save">Сохранить реквизиты</button>
     </div>
-  </div>
-  ${(()=>{const n=DB.notify||{};return `
-  <div class="card" style="margin-bottom:16px">
+  </div>`;
+}
+function viewNotifSettings(){const n=DB.notify||{};return `
+  <div class="card">
     <div class="card-h"><h2>Уведомления — транспорт и адресат по умолчанию</h2></div>
     <div class="modal-b">
       <p class="hint" style="margin-top:0">Здесь задаётся доступ к отправке (бот Telegram и SMTP-сервер) и адресат по умолчанию для принтеров без привязки. Разные адресаты для принтеров — в «Справочники → Уведомления».</p>
@@ -801,7 +843,10 @@ function viewData(){
       <div class="toolbar" style="margin-top:12px"><button class="btn primary" id="n-save">Сохранить</button><button class="btn" id="n-test">Проверить отправку</button></div>
       <p class="hint">Уведомление уходит, когда остаток картриджа становится ≤ минимума. «Проверить отправку» использует уже сохранённые настройки.</p>
     </div>
-  </div>`;})()}
+  </div>`;
+}
+function viewBackup(){
+  return `
   <div class="card">
     <div class="card-h"><h2>Данные и резервные копии</h2></div>
     <div class="modal-b">
@@ -823,11 +868,13 @@ function viewData(){
 }
 
 /* ===== render ===== */
-const REF_SECTIONS=['equip','people','sup','tsd','prn','notif'];
 function render(){
-  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===view));
-  const ddb=document.getElementById('dd-ref-btn');if(ddb)ddb.classList.toggle('active',REF_SECTIONS.includes(view));
-  const dd=document.getElementById('dd-ref');if(dd)dd.classList.remove('open');
+  document.querySelectorAll('.tab[data-view]').forEach(t=>t.classList.toggle('active',t.dataset.view===view));
+  document.querySelectorAll('.tab-dd').forEach(dd=>{
+    dd.classList.remove('open');
+    const owns=[...dd.querySelectorAll('.dd-item')].some(it=>it.dataset.view===view);
+    const tg=dd.querySelector('.dd-toggle');if(tg)tg.classList.toggle('active',owns);
+  });
   const app=$('#app');
   if(view==='dash')app.innerHTML=viewDash();
   else if(view==='equip')app.innerHTML=viewEquip();
@@ -838,9 +885,12 @@ function render(){
   else if(view==='notif')app.innerHTML=viewNotifications();
   else if(view==='sup')app.innerHTML=viewSuppliers();
   else if(view==='tsd')app.innerHTML=viewTsd();
+  else if(view==='loc')app.innerHTML=viewLocations();
   else if(view==='users')app.innerHTML=viewUsers();
   else if(view==='about')app.innerHTML=viewAbout();
-  else if(view==='data')app.innerHTML=viewData();
+  else if(view==='req')app.innerHTML=viewReq();
+  else if(view==='notifset')app.innerHTML=viewNotifSettings();
+  else if(view==='backup')app.innerHTML=viewBackup();
   bindView();
 }
 function bindView(){
@@ -900,19 +950,28 @@ function bindView(){
     document.querySelectorAll('[data-tact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.tact;
       if(a==='tedit')tsdModal(id);else if(a==='tdel')tsdDel(id);});
   }
+  if(view==='loc'){
+    $('#loc-add').onclick=()=>locModal(null);
+    document.querySelectorAll('[data-lact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.lact;
+      if(a==='ledit')locModal(id);else if(a==='ldel')locDel(id);});
+  }
   if(view==='users'){
     const add=$('#usr-add');if(add)add.onclick=()=>userModal(null);
     document.querySelectorAll('[data-uact]').forEach(b=>b.onclick=()=>{const id=b.dataset.id,a=b.dataset.uact;
       if(a==='uedit')userModal(id);else if(a==='udel')userDel(id);});
   }
-  if(view==='data'){
+  if(view==='req'){
     $('#o-save').onclick=async()=>{await api('PUT','/api/settings/org',{name:$('#o-name').value.trim(),inn:$('#o-inn').value.trim(),address:$('#o-address').value.trim(),city:$('#o-city').value.trim(),signatory:$('#o-signatory').value.trim(),signatoryShort:$('#o-sigshort').value.trim(),basis:$('#o-basis').value.trim()});await reload();toast('Реквизиты сохранены');};
+  }
+  if(view==='backup'){
     $('#d-export').onclick=()=>{window.location='/api/export';};
     $('#d-csv').onclick=exportCSV;
     $('#d-xlsx').onclick=()=>{window.location='/api/export/equipment.xlsx';};
     $('#d-import').onclick=()=>$('#d-file').click();
     $('#d-file').onchange=importJSON;
     $('#d-wipe').onclick=wipeModal;
+  }
+  if(view==='notifset'){
     $('#n-save').onclick=async()=>{
       const b={telegram_enabled:$('#n-tg-en').checked,telegram_chat_id:$('#n-tg-chat').value.trim(),
         email_enabled:$('#n-mail-en').checked,smtp_host:$('#n-host').value.trim(),smtp_port:parseInt($('#n-port').value||'587',10),
@@ -953,7 +1012,7 @@ function editEquip(id){
         <div class="field"><label>Серийный № (S/N)</label><input id="f-serial" value="${esc(e.serial)}"></div>
       </div>
       <div class="grid2">
-        <div class="field"><label>Локация</label><input id="f-location" value="${esc(e.location)}" placeholder="Москва / офис"></div>
+        <div class="field"><label>Локация</label><input id="f-location" list="loclist" value="${esc(e.location)}" placeholder="выберите или впишите">${locDatalist()}</div>
         <div class="field"><label>Стоимость, руб.</label><input id="f-cost" value="${esc(e.cost||'')}" placeholder="Напр. 79 990"></div>
       </div>
       <div class="field"><label>Номер заказа / дата покупки</label><input id="f-purchase" value="${esc(e.purchase)}" placeholder="Напр. V050292468 от 09.04.2026"></div>
@@ -1324,14 +1383,14 @@ function importJSON(ev){
 
 /* ===== init ===== */
 document.getElementById('tabs').addEventListener('click',e=>{
-  const ddBtn=e.target.closest('#dd-ref-btn');
-  if(ddBtn){e.stopPropagation();document.getElementById('dd-ref').classList.toggle('open');return;}
+  const tg=e.target.closest('.dd-toggle');
+  if(tg){e.stopPropagation();const dd=tg.closest('.tab-dd');const willOpen=!dd.classList.contains('open');document.querySelectorAll('.tab-dd').forEach(x=>x.classList.remove('open'));if(willOpen)dd.classList.add('open');return;}
   const item=e.target.closest('.dd-item');
   if(item){if(item.dataset.view==='users')USERS=null;view=item.dataset.view;render();return;}
   const b=e.target.closest('.tab[data-view]');
   if(b){if(b.dataset.view==='users')USERS=null;view=b.dataset.view;render();}
 });
-document.addEventListener('click',e=>{const dd=document.getElementById('dd-ref');if(dd&&!dd.contains(e.target))dd.classList.remove('open');});
+document.addEventListener('click',e=>{if(!e.target.closest('.tab-dd'))document.querySelectorAll('.tab-dd').forEach(x=>x.classList.remove('open'));});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeModal();const pa=$('#printArea');if(pa)pa.hidden=true;}});
 $('#lg-form').addEventListener('submit',e=>{e.preventDefault();doLogin();});
 boot();

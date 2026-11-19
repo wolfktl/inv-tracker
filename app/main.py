@@ -38,7 +38,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 # ---------------------------------------------------------------- config
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.5.0"
 
 # Разделы, доступ к которым можно выдавать обычным пользователям.
 GRANTABLE_SECTIONS = ["equip", "people", "acts", "cart", "sup", "tsd"]
@@ -137,6 +137,13 @@ class Tsd(Base):
     inv_no: Mapped[str] = mapped_column(String(64), default="")      # инвентарный номер
     name: Mapped[str] = mapped_column(String(200), default="")       # наименование
     inner_no: Mapped[str] = mapped_column(String(64), default="")    # внутренний номер
+    location: Mapped[str] = mapped_column(String(128), default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+
+class Location(Base):
+    __tablename__ = "locations"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
     note: Mapped[str] = mapped_column(Text, default="")
 
 class Notification(Base):
@@ -201,7 +208,11 @@ def supplier_dict(s: Supplier):
             "email": s.email, "note": s.note}
 
 def tsd_dict(t: Tsd):
-    return {"id": t.id, "invNo": t.inv_no, "name": t.name, "innerNo": t.inner_no, "note": t.note}
+    return {"id": t.id, "invNo": t.inv_no, "name": t.name, "innerNo": t.inner_no,
+            "location": t.location, "note": t.note}
+
+def location_dict(l: Location):
+    return {"id": l.id, "name": l.name, "note": l.note}
 
 def printer_dict(p: Printer):
     return {"id": p.id, "name": p.name, "model": p.model, "location": p.location,
@@ -432,7 +443,7 @@ PERM_PREFIXES = [
     ("/api/import", "admin"), ("/api/wipe", "admin"),
     ("/api/equipment", "equip"), ("/api/employees", "people"), ("/api/acts", "acts"),
     ("/api/cartridges", "cart"), ("/api/printers", "cart"), ("/api/notifications", "cart"),
-    ("/api/suppliers", "sup"), ("/api/tsd", "tsd"),
+    ("/api/suppliers", "sup"), ("/api/tsd", "tsd"), ("/api/locations", "equip"),
 ]
 
 async def _perm_dispatch(request: Request, call_next):
@@ -697,6 +708,7 @@ def state(db: Session = Depends(get_db), u: User = Depends(current_user)):
         "acts": [act_dict(a) for a in db.scalars(select(Act)).all()] if allow("acts") else [],
         "suppliers": [supplier_dict(s) for s in db.scalars(select(Supplier)).all()] if (allow("sup") or allow("equip")) else [],
         "tsd": [tsd_dict(t) for t in db.scalars(select(Tsd)).all()] if allow("tsd") else [],
+        "locations": [location_dict(l) for l in db.scalars(select(Location)).all()] if (allow("equip") or allow("tsd") or allow("cart")) else [],
         "printers": [printer_dict(p) for p in db.scalars(select(Printer)).all()] if allow("cart") else [],
         "cartridges": [cartridge_dict(cg, _printers_map(db))
                        for cg in db.scalars(select(Cartridge)).all()] if allow("cart") else [],
@@ -927,7 +939,38 @@ def emp_delete(eid: str, db: Session = Depends(get_db), u: User = Depends(curren
     return {"ok": True}
 
 # ---------- ТСД (справочник терминалов сбора данных)
-TSD_FIELDS = [("invNo", "inv_no"), ("name", "name"), ("innerNo", "inner_no"), ("note", "note")]
+TSD_FIELDS = [("invNo", "inv_no"), ("name", "name"), ("innerNo", "inner_no"),
+              ("location", "location"), ("note", "note")]
+
+# ---------- locations (справочник локаций)
+@app.post("/api/locations")
+def location_create(body: dict, db: Session = Depends(get_db), u: User = Depends(current_user)):
+    l = Location(id="loc-" + secrets.token_hex(5), name=(body.get("name") or "").strip(),
+                 note=(body.get("note") or "").strip())
+    if not l.name:
+        raise HTTPException(400, "Укажите название локации")
+    db.add(l); db.commit()
+    return location_dict(l)
+
+@app.put("/api/locations/{lid}")
+def location_update(lid: str, body: dict, db: Session = Depends(get_db), u: User = Depends(current_user)):
+    l = db.get(Location, lid)
+    if not l:
+        raise HTTPException(404, "Не найдено")
+    if "name" in body:
+        l.name = (body["name"] or "").strip()
+    if "note" in body:
+        l.note = (body["note"] or "").strip()
+    db.commit()
+    return location_dict(l)
+
+@app.delete("/api/locations/{lid}")
+def location_delete(lid: str, db: Session = Depends(get_db), u: User = Depends(current_user)):
+    l = db.get(Location, lid)
+    if not l:
+        raise HTTPException(404, "Не найдено")
+    db.delete(l); db.commit()   # локация у техники — строкой, не ссылкой: записи не трогаем
+    return {"ok": True}
 
 @app.post("/api/tsd")
 def tsd_create(body: dict, db: Session = Depends(get_db), u: User = Depends(current_user)):
@@ -1243,6 +1286,7 @@ def export_all(db: Session = Depends(get_db), u: User = Depends(current_user)):
         "acts": [act_dict(a) for a in db.scalars(select(Act)).all()],
         "suppliers": [supplier_dict(s) for s in db.scalars(select(Supplier)).all()],
         "tsd": [tsd_dict(t) for t in db.scalars(select(Tsd)).all()],
+        "locations": [location_dict(l) for l in db.scalars(select(Location)).all()],
         "notifications": [notification_dict(n) for n in db.scalars(select(Notification)).all()],
         "printers": [printer_dict(p) for p in db.scalars(select(Printer)).all()],
         "cartridges": [cartridge_dict(cg, _printers_map(db)) for cg in db.scalars(select(Cartridge)).all()],
@@ -1310,6 +1354,7 @@ def wipe(body: dict, db: Session = Depends(get_db), u: User = Depends(current_us
     db.query(Supplier).delete()
     db.query(Tsd).delete()
     db.query(Notification).delete()
+    db.query(Location).delete()
     seq = db.get(Setting, "seq")
     if seq:
         seq.value = {"act": 0, "inv": 1}
@@ -1329,6 +1374,10 @@ def import_all(body: dict, db: Session = Depends(get_db), u: User = Depends(curr
     db.query(Supplier).delete()
     db.query(Tsd).delete()
     db.query(Notification).delete()
+    db.query(Location).delete()
+    for l in body.get("locations", []):
+        if l.get("id"):
+            db.add(Location(id=l["id"], name=l.get("name", ""), note=l.get("note", "")))
     for n in body.get("notifications", []):
         if n.get("id"):
             db.add(Notification(id=n["id"], name=n.get("name", ""), telegram_chat_id=n.get("telegramChatId", ""),
@@ -1340,7 +1389,7 @@ def import_all(body: dict, db: Session = Depends(get_db), u: User = Depends(curr
     for t in body.get("tsd", []):
         if t.get("id"):
             db.add(Tsd(id=t["id"], inv_no=t.get("invNo", ""), name=t.get("name", ""),
-                       inner_no=t.get("innerNo", ""), note=t.get("note", "")))
+                       inner_no=t.get("innerNo", ""), location=t.get("location", ""), note=t.get("note", "")))
     supplier_ids = {s.get("id") for s in body.get("suppliers", []) if s.get("id")}
     for p in body.get("printers", []):
         if p.get("id"):
