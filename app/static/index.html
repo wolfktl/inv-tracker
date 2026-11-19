@@ -350,13 +350,19 @@ function viewDash(){
   <div class="card">
     <div class="card-h"><h2>По типам оборудования</h2></div>
     <div class="tbl-scroll"><table><thead><tr><th>Тип</th><th>Всего</th><th>Выдано</th><th>На складе</th><th>В ремонте</th></tr></thead><tbody>
-    ${byType.map(([t])=>{
-      const items=q.filter(e=>e.type===t);
-      return `<tr><td><span class="tag">${esc(t)}</span></td><td>${items.length}</td>
-        <td>${items.filter(e=>e.status==='issued').length}</td>
-        <td>${items.filter(e=>e.status==='stock').length}</td>
-        <td>${items.filter(e=>e.status==='repair').length}</td></tr>`;
-    }).join('')||'<tr><td colspan="5" class="empty">Нет данных</td></tr>'}
+    ${(()=>{
+      let rows=byType.map(([t])=>{
+        const items=q.filter(e=>e.type===t);
+        return `<tr><td><span class="tag">${esc(t)}</span></td><td>${items.length}</td>
+          <td>${items.filter(e=>e.status==='issued').length}</td>
+          <td>${items.filter(e=>e.status==='stock').length}</td>
+          <td>${items.filter(e=>e.status==='repair').length}</td></tr>`;
+      }).join('');
+      const extra=(n,label)=>n?`<tr><td><span class="tag">${label}</span></td><td>${n}</td><td class="sub">—</td><td class="sub">—</td><td class="sub">—</td></tr>`:'';
+      rows+=extra((DB.printers||[]).length,'Принтеры');
+      rows+=extra((DB.tsd||[]).length,'ТСД');
+      return rows||'<tr><td colspan="5" class="empty">Нет данных</td></tr>';
+    })()}
     </tbody></table></div>
   </div>`;
 }
