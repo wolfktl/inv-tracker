@@ -100,6 +100,7 @@ td .sub{color:var(--muted);font-size:12px}
 .modal-b{padding:18px}
 .modal-f{display:flex;gap:8px;justify-content:flex-end;padding:14px 18px;border-top:1px solid var(--line);background:#fafbfd;border-radius:0 0 14px 14px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
 .field{margin-bottom:12px}
 /* field labels */
 .field label{display:block;font-size:12px;color:var(--muted);font-weight:600;margin-bottom:5px}
@@ -111,7 +112,7 @@ td .sub{color:var(--muted);font-size:12px}
 .checkitem .meta{flex:1}
 .checkitem .meta .sub{color:var(--muted);font-size:12px}
 
-@media (max-width:620px){ .grid2{grid-template-columns:1fr} .wrap{padding:12px} .hide-sm{display:none} }
+@media (max-width:620px){ .grid2{grid-template-columns:1fr} .grid3{grid-template-columns:1fr} .wrap{padding:12px} .hide-sm{display:none} }
 
 /* print act */
 .print-area{background:#fff}
@@ -434,7 +435,7 @@ function rowEquip(e){
 function viewPeople(){
   let list=DB.employees.slice();
   if(fPeople)list=list.filter(e=>matchQuery([e.fullName,e.login,e.email,e.dept,e.position,e.location].join(' '),fPeople));
-  list.sort((a,b)=>a.fullName.localeCompare(b.fullName,'ru'));
+  list.sort((a,b)=>(a.lastName||a.fullName).localeCompare(b.lastName||b.fullName,'ru'));
   return `
   <div class="card">
     <div class="card-h">
@@ -445,11 +446,14 @@ function viewPeople(){
       </div>
     </div>
     <div class="tbl-scroll"><table>
-      <thead><tr><th>ФИО</th><th class="hide-sm">Логин</th><th class="hide-sm">E-mail</th><th>Техника</th><th></th></tr></thead>
+      <thead><tr><th>Фамилия</th><th>Имя</th><th class="hide-sm">Отчество</th><th class="hide-sm">Логин</th><th class="hide-sm">E-mail</th><th>Техника</th><th></th></tr></thead>
       <tbody>${list.map(p=>{
         const n=devCount(p.id);
+        const last=p.lastName||p.fullName;
         return `<tr>
-          <td><b>${esc(p.fullName)}</b>${p.dept||p.position?`<div class="sub">${esc([p.position,p.dept].filter(Boolean).join(' · '))}</div>`:''}</td>
+          <td><b>${esc(last)}</b>${p.dept||p.position?`<div class="sub">${esc([p.position,p.dept].filter(Boolean).join(' · '))}</div>`:''}</td>
+          <td>${esc(p.firstName)||'—'}</td>
+          <td class="hide-sm">${esc(p.middleName)||'—'}</td>
           <td class="mono hide-sm">${esc(p.login)||'—'}</td>
           <td class="hide-sm">${esc(p.email)||'—'}</td>
           <td>${n?`<span class="tag">${n} ед.</span>`:'<span class="sub">—</span>'}</td>
@@ -458,7 +462,7 @@ function viewPeople(){
             <button class="btn sm ghost" data-act="pedit" data-id="${p.id}">✎</button>
             <button class="btn sm ghost danger" data-act="pdel" data-id="${p.id}">✕</button>
           </td></tr>`;
-      }).join('')||'<tr><td colspan="5" class="empty">Ничего не найдено</td></tr>'}</tbody>
+      }).join('')||'<tr><td colspan="7" class="empty">Ничего не найдено</td></tr>'}</tbody>
     </table></div>
   </div>`;
 }
@@ -1126,11 +1130,15 @@ function printLabels(items){
 
 /* ===== person ===== */
 function editPerson(id){
-  const p=id?empById(id):{fullName:'',login:'',email:'',dept:'',position:'',location:'',passport:'',passportIssued:'',passportCode:'',contractNo:'',contractDate:''};
+  const p=id?empById(id):{fullName:'',lastName:'',firstName:'',middleName:'',login:'',email:'',dept:'',position:'',location:'',passport:'',passportIssued:'',passportCode:'',contractNo:'',contractDate:''};
   openModal(`
     <div class="modal-h"><h3>${id?'Редактировать сотрудника':'Новый сотрудник'}</h3></div>
     <div class="modal-b">
-      <div class="field"><label>ФИО</label><input id="p-fio" value="${esc(p.fullName)}" placeholder="Иванов Иван Иванович"></div>
+      <div class="grid3">
+        <div class="field"><label>Фамилия</label><input id="p-last" value="${esc(p.lastName||'')}" placeholder="Иванов"></div>
+        <div class="field"><label>Имя</label><input id="p-first" value="${esc(p.firstName||'')}" placeholder="Иван"></div>
+        <div class="field"><label>Отчество</label><input id="p-middle" value="${esc(p.middleName||'')}" placeholder="Иванович"></div>
+      </div>
       <div class="grid2"><div class="field"><label>Логин</label><input id="p-login" value="${esc(p.login)}"></div>
         <div class="field"><label>E-mail</label><input id="p-email" value="${esc(p.email)}"></div></div>
       <div class="grid2"><div class="field"><label>Должность</label><input id="p-pos" value="${esc(p.position||'')}"></div>
@@ -1146,11 +1154,12 @@ function editPerson(id){
     <div class="modal-f"><button class="btn ghost" id="m-cancel">Отмена</button><button class="btn primary" id="m-save">Сохранить</button></div>`);
   $('#m-cancel').onclick=closeModal;
   $('#m-save').onclick=async()=>{
-    const data={fullName:$('#p-fio').value.trim(),login:$('#p-login').value.trim(),email:$('#p-email').value.trim(),
+    const data={lastName:$('#p-last').value.trim(),firstName:$('#p-first').value.trim(),middleName:$('#p-middle').value.trim(),
+      login:$('#p-login').value.trim(),email:$('#p-email').value.trim(),
       position:$('#p-pos').value.trim(),dept:$('#p-dept').value.trim(),location:$('#p-loc').value.trim(),
       passport:$('#p-pass').value.trim(),passportIssued:$('#p-passiss').value.trim(),passportCode:$('#p-passcode').value.trim(),
       contractNo:$('#p-cno').value.trim(),contractDate:$('#p-cdate').value.trim()};
-    if(!data.fullName){toast('Укажите ФИО');return;}
+    if(!data.lastName){toast('Укажите фамилию');return;}
     try{if(id)await api('PUT','/api/employees/'+id,data);else await api('POST','/api/employees',data);closeModal();await reload();}catch(e){errToast(e);}
   };
 }

@@ -38,7 +38,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 # ---------------------------------------------------------------- config
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 
 # Разделы, доступ к которым можно выдавать обычным пользователям.
 GRANTABLE_SECTIONS = ["equip", "people", "acts", "cart", "sup", "tsd"]
@@ -73,7 +73,10 @@ class User(Base):
 class Employee(Base):
     __tablename__ = "employees"
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    full_name: Mapped[str] = mapped_column(String(200), default="")
+    full_name: Mapped[str] = mapped_column(String(200), default="")      # собирается из частей
+    last_name: Mapped[str] = mapped_column(String(80), default="")       # фамилия
+    first_name: Mapped[str] = mapped_column(String(80), default="")      # имя
+    middle_name: Mapped[str] = mapped_column(String(80), default="")     # отчество
     login: Mapped[str] = mapped_column(String(64), default="")
     email: Mapped[str] = mapped_column(String(128), default="")
     dept: Mapped[str] = mapped_column(String(128), default="")
@@ -189,9 +192,36 @@ def verify_pw(pw: str, stored: str) -> bool:
     except Exception:
         return False
 
+# ---------------------------------------------------------------- ФИО helpers
+def split_fio(full: str):
+    """Разбить строку ФИО на (фамилия, имя, отчество) по пробелам."""
+    parts = (full or "").split()
+    last = parts[0] if parts else ""
+    first = parts[1] if len(parts) > 1 else ""
+    middle = " ".join(parts[2:]) if len(parts) > 2 else ""
+    return last, first, middle
+
+def join_fio(last: str, first: str, middle: str):
+    """Собрать ФИО из частей, схлопывая лишние пробелы."""
+    return " ".join(p for p in ((last or "").strip(), (first or "").strip(), (middle or "").strip()) if p)
+
+def emp_name_fields(src: dict):
+    """Собрать поля имени из тела запроса/сида: части приоритетнее, иначе разбираем fullName."""
+    has_parts = any(k in src for k in ("lastName", "firstName", "middleName"))
+    if has_parts:
+        last = (src.get("lastName") or "").strip()
+        first = (src.get("firstName") or "").strip()
+        middle = (src.get("middleName") or "").strip()
+    else:
+        last, first, middle = split_fio(src.get("fullName", ""))
+    return {"last_name": last, "first_name": first, "middle_name": middle,
+            "full_name": join_fio(last, first, middle)}
+
 # ---------------------------------------------------------------- serialization
 def emp_dict(e: Employee):
-    return {"id": e.id, "fullName": e.full_name, "login": e.login, "email": e.email,
+    return {"id": e.id, "fullName": e.full_name,
+            "lastName": e.last_name, "firstName": e.first_name, "middleName": e.middle_name,
+            "login": e.login, "email": e.email,
             "dept": e.dept, "position": e.position, "location": e.location,
             "passport": e.passport, "passportIssued": e.passport_issued, "passportCode": e.passport_code,
             "contractNo": e.contract_no, "contractDate": e.contract_date}
@@ -414,7 +444,7 @@ def seed_if_empty():
                     if e["id"] in seen:
                         continue
                     seen.add(e["id"])
-                    db.add(Employee(id=e["id"], full_name=e.get("fullName", ""), login=e.get("login", ""),
+                    db.add(Employee(id=e["id"], **emp_name_fields(e), login=e.get("login", ""),
                                     email=e.get("email", ""), dept=e.get("dept", ""),
                                     position=e.get("position", ""), location=e.get("location", ""),
                                     passport=e.get("passport", ""), passport_issued=e.get("passportIssued", ""),
@@ -919,7 +949,8 @@ def notify_test(db: Session = Depends(get_db), u: User = Depends(current_user)):
     return {"results": [{"channel": c, "ok": ok, "info": info} for (c, ok, info) in res]}
 
 # ---------- employees
-EMP_FIELDS = [("fullName", "full_name"), ("login", "login"), ("email", "email"),
+# поля без имени (имя обрабатывается отдельно через emp_name_fields)
+EMP_FIELDS = [("login", "login"), ("email", "email"),
               ("dept", "dept"), ("position", "position"), ("location", "location"),
               ("passport", "passport"), ("passportIssued", "passport_issued"),
               ("passportCode", "passport_code"), ("contractNo", "contract_no"),
@@ -928,11 +959,13 @@ EMP_FIELDS = [("fullName", "full_name"), ("login", "login"), ("email", "email"),
 @app.post("/api/employees")
 def emp_create(body: dict, db: Session = Depends(get_db), u: User = Depends(current_user)):
     e = Employee(id="emp-" + secrets.token_hex(5))
+    for k, v in emp_name_fields(body).items():
+        setattr(e, k, v)
     for j, c in EMP_FIELDS:
         if j in body:
             setattr(e, c, (body[j] or "").strip())
-    if not e.full_name:
-        raise HTTPException(400, "Укажите ФИО")
+    if not e.last_name:
+        raise HTTPException(400, "Укажите фамилию")
     db.add(e); db.commit()
     return emp_dict(e)
 
@@ -941,6 +974,9 @@ def emp_update(eid: str, body: dict, db: Session = Depends(get_db), u: User = De
     e = db.get(Employee, eid)
     if not e:
         raise HTTPException(404, "Не найдено")
+    if any(k in body for k in ("lastName", "firstName", "middleName", "fullName")):
+        for k, v in emp_name_fields(body).items():
+            setattr(e, k, v)
     for j, c in EMP_FIELDS:
         if j in body:
             setattr(e, c, (body[j] or "").strip())
@@ -1443,7 +1479,7 @@ def import_all(body: dict, db: Session = Depends(get_db), u: User = Depends(curr
         if not e.get("id") or e["id"] in seen:
             continue
         seen.add(e["id"])
-        db.add(Employee(id=e["id"], full_name=e.get("fullName", ""), login=e.get("login", ""),
+        db.add(Employee(id=e["id"], **emp_name_fields(e), login=e.get("login", ""),
                         email=e.get("email", ""), dept=e.get("dept", ""),
                         position=e.get("position", ""), location=e.get("location", ""),
                         passport=e.get("passport", ""), passport_issued=e.get("passportIssued", ""),
