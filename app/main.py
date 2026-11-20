@@ -38,7 +38,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 # ---------------------------------------------------------------- config
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.8.1"
 
 # Разделы, доступ к которым можно выдавать обычным пользователям.
 GRANTABLE_SECTIONS = ["equip", "people", "acts", "cart", "sup", "tsd"]
@@ -47,6 +47,9 @@ DB_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg2://inv:inv@db:5432/i
 SECRET_KEY = os.environ.get("SECRET_KEY", "change-me-please-" + secrets.token_hex(8))
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
+# Загружать демонстрационные данные (seed_data.json) в пустую базу.
+# По умолчанию ВЫКЛЮЧЕНО — боевая база стартует пустой. Для демо: SEED_DEMO=1.
+SEED_DEMO = os.environ.get("SEED_DEMO", "").strip().lower() in ("1", "true", "yes", "on")
 STATUSES = {"stock", "issued", "repair", "writeoff"}
 STATUS_RU = {"stock": "На складе", "issued": "Выдано", "repair": "В ремонте", "writeoff": "Списано"}
 
@@ -434,8 +437,8 @@ def seed_if_empty():
             db.add(Setting(key="seq", value={"act": 0, "inv": 1}))
         if not db.get(Setting, "notify"):
             db.add(Setting(key="notify", value=DEFAULT_NOTIFY))
-        # inventory seed
-        if db.scalar(select(func.count(Employee.id))) == 0:
+        # inventory seed — только демо-режим (SEED_DEMO=1) и только в пустую базу
+        if SEED_DEMO and db.scalar(select(func.count(Employee.id))) == 0:
             seed_path = BASE / "seed_data.json"
             if seed_path.exists():
                 data = json.loads(seed_path.read_text(encoding="utf-8"))

@@ -21,6 +21,7 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-insecure-change-me}
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      SEED_DEMO: ${SEED_DEMO:-0}
     depends_on:
       db:
         condition: service_healthy
