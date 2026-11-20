@@ -874,7 +874,7 @@ function viewBackup(){
           <button class="btn primary" id="d-xlsx-up">⬆ Загрузить технику (XLSX)</button>
           <button class="btn" id="d-tmpl">⬇ Шаблон</button>
         </div>
-        <p class="hint">Один лист = один тип техники (по названию листа: «Телефоны», «Ноутбуки»…), одна строка = одна единица. Сотрудник находится/создаётся по логину → e-mail → ФИО, поставщик — по названию. <b>Добавляет</b> технику, не заменяя существующую.</p>
+        <p class="hint">Тип техники — по колонке «Тип», иначе по названию листа («Телефоны», «Ноутбуки»…); одна строка = одна единица. Сотрудник находится/создаётся по логину → e-mail → ФИО, поставщик — по названию. Повторная загрузка <b>не плодит дубли</b>: техника ищется по <b>серийному №</b>, затем по <b>внутреннему наименованию</b> — если найдена, запись <b>обновляется</b> (пустые ячейки не затирают заполненные поля), иначе добавляется новая.</p>
       </div>
       <input type="file" id="d-file" accept="application/json" class="hidden">
       <input type="file" id="d-xfile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden">
@@ -1420,9 +1420,9 @@ function importEquipXlsx(ev){
       const b64=String(r.result).split(',')[1]||'';
       const res=await api('POST','/api/import/equipment-xlsx',{dataB64:b64});
       await reload();
-      let msg='Добавлено: '+res.equipment+' ед. техники';
-      if(res.employees)msg+=', '+res.employees+' сотр.';
-      if(res.suppliers)msg+=', '+res.suppliers+' пост.';
+      let msg='Техника — добавлено: '+(res.created||0)+', обновлено: '+(res.updated||0);
+      if(res.employees)msg+=' · сотр.: +'+res.employees;
+      if(res.suppliers)msg+=' · пост.: +'+res.suppliers;
       toast(msg);
       if(res.errors&&res.errors.length)alert('Загружено с замечаниями:\n\n'+res.errors.join('\n'));
     }catch(e){errToast(e);}

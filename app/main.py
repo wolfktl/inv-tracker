@@ -38,7 +38,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 # ---------------------------------------------------------------- config
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.9.0"
 
 # Разделы, доступ к которым можно выдавать обычным пользователям.
 GRANTABLE_SECTIONS = ["equip", "people", "acts", "cart", "sup", "tsd"]
@@ -1481,8 +1481,13 @@ def import_equipment_xlsx(body: dict, db: Session = Depends(get_db), u: User = D
     by_fio = {e.full_name.strip().lower(): e for e in emps if e.full_name}
     sups = db.scalars(select(Supplier)).all()
     by_sup = {s.name.strip().lower(): s for s in sups if s.name}
+    # индекс существующей техники для обновления (без дублей): по S/N, затем по
+    # внутреннему наименованию
+    eqs_all = db.scalars(select(Equipment)).all()
+    by_serial = {e.serial.strip().lower(): e for e in eqs_all if (e.serial or "").strip()}
+    by_inner = {e.inner_name.strip().lower(): e for e in eqs_all if (e.inner_name or "").strip()}
 
-    n_eq = n_emp = n_sup = 0
+    n_new = n_upd = n_emp = n_sup = 0
     errors = []
 
     def get_supplier(name):
@@ -1556,23 +1561,46 @@ def import_equipment_xlsx(body: dict, db: Session = Depends(get_db), u: User = D
             note = row.get("note", "")
             if row.get("issued_by"):
                 note = (note + "; " if note else "") + "Выдал: " + row["issued_by"]
-            q = Equipment(
-                id="eq-" + secrets.token_hex(5),
-                type=(row.get("type") or sheet_type),
-                name=name, inner_name=row.get("inner", ""), serial=row.get("serial", ""),
-                purchase=purchase, cost=row.get("cost", ""), location=row.get("location", ""),
-                note=note, invno=_next_inv(db),
-                supplier_id=sup.id if sup else None,
-            )
+            serial = row.get("serial", ""); inner = row.get("inner", "")
+            # поиск существующей единицы: по S/N, затем по внутр. наименованию
+            q = (by_serial.get(serial.strip().lower()) if serial.strip() else None) \
+                or (by_inner.get(inner.strip().lower()) if inner.strip() else None)
+            creating = q is None
+            if creating:
+                q = Equipment(id="eq-" + secrets.token_hex(5), invno=_next_inv(db),
+                              type=sheet_type, status="stock")
+                db.add(q)
+            # обновляем поля; пустые ячейки не затирают уже заполненные значения
+            if row.get("type"):
+                q.type = row["type"]
+            q.name = name
+            if inner:
+                q.inner_name = inner
+            if serial:
+                q.serial = serial
+            if purchase:
+                q.purchase = purchase
+            if row.get("cost"):
+                q.cost = row["cost"]
+            if row.get("location"):
+                q.location = row["location"]
+            if note:
+                q.note = note
+            if sup:
+                q.supplier_id = sup.id
             if emp:
                 q.emp_id = emp.id; q.assign_type = "employee"; q.status = "issued"
-            else:
-                q.status = "stock"
-            db.add(q)
-            n_eq += 1
+            db.flush()
+            if (q.serial or "").strip():
+                by_serial[q.serial.strip().lower()] = q
+            if (q.inner_name or "").strip():
+                by_inner[q.inner_name.strip().lower()] = q
+            n_new += creating
+            n_upd += not creating
 
     db.commit()
-    return {"equipment": n_eq, "employees": n_emp, "suppliers": n_sup, "errors": errors}
+    return {"created": n_new, "updated": n_upd, "equipment": n_new + n_upd,
+            "employees": n_emp, "suppliers": n_sup, "errors": errors}
 
 
 @app.get("/api/import/equipment-template.xlsx")
