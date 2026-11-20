@@ -868,7 +868,16 @@ function viewBackup(){
         <button class="btn" id="d-csv">⬇ Техника (CSV)</button>
         <button class="btn" id="d-xlsx">⬇ Техника (XLSX)</button>
       </div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+        <p class="hint" style="margin:0 0 8px;font-weight:600;color:var(--ink)">Массовая загрузка техники из Excel</p>
+        <div class="toolbar">
+          <button class="btn primary" id="d-xlsx-up">⬆ Загрузить технику (XLSX)</button>
+          <button class="btn" id="d-tmpl">⬇ Шаблон</button>
+        </div>
+        <p class="hint">Один лист = один тип техники (по названию листа: «Телефоны», «Ноутбуки»…), одна строка = одна единица. Сотрудник находится/создаётся по логину → e-mail → ФИО, поставщик — по названию. <b>Добавляет</b> технику, не заменяя существующую.</p>
+      </div>
       <input type="file" id="d-file" accept="application/json" class="hidden">
+      <input type="file" id="d-xfile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden">
       <p class="hint">Всего: ${DB.equipment.length} ед. техники, ${DB.employees.length} сотрудников, ${DB.acts.length} актов.</p>
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
         <button class="btn danger" id="d-wipe">🗑 Очистить базу…</button>
@@ -980,6 +989,9 @@ function bindView(){
     $('#d-xlsx').onclick=()=>{window.location='/api/export/equipment.xlsx';};
     $('#d-import').onclick=()=>$('#d-file').click();
     $('#d-file').onchange=importJSON;
+    $('#d-tmpl').onclick=()=>{window.location='/api/import/equipment-template.xlsx';};
+    $('#d-xlsx-up').onclick=()=>$('#d-xfile').click();
+    $('#d-xfile').onchange=importEquipXlsx;
     $('#d-wipe').onclick=wipeModal;
   }
   if(view==='notifset'){
@@ -1399,6 +1411,23 @@ function importJSON(ev){
   const r=new FileReader();
   r.onload=async()=>{try{const d=JSON.parse(r.result);if(!d.equipment||!d.employees)throw 0;if(!confirm('Импорт полностью заменит текущие технику, сотрудников и акты. Продолжить?')){return;}await api('POST','/api/import',d);await reload();toast('Данные импортированы');}catch(e){toast('Не удалось импортировать файл');}};
   r.readAsText(f);ev.target.value='';
+}
+function importEquipXlsx(ev){
+  const f=ev.target.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=async()=>{
+    try{
+      const b64=String(r.result).split(',')[1]||'';
+      const res=await api('POST','/api/import/equipment-xlsx',{dataB64:b64});
+      await reload();
+      let msg='Добавлено: '+res.equipment+' ед. техники';
+      if(res.employees)msg+=', '+res.employees+' сотр.';
+      if(res.suppliers)msg+=', '+res.suppliers+' пост.';
+      toast(msg);
+      if(res.errors&&res.errors.length)alert('Загружено с замечаниями:\n\n'+res.errors.join('\n'));
+    }catch(e){errToast(e);}
+  };
+  r.readAsDataURL(f);ev.target.value='';
 }
 
 /* ===== init ===== */

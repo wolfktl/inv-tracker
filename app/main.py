@@ -2,7 +2,7 @@
 Учёт техники — backend (FastAPI + PostgreSQL).
 Авторизация по сессионной cookie, REST API, отдача статического UI.
 """
-import os, io, re, json, hashlib, hmac, secrets, datetime, pathlib
+import os, io, re, json, base64, hashlib, hmac, secrets, datetime, pathlib
 from typing import Optional, List
 
 import barcode
@@ -38,7 +38,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 # ---------------------------------------------------------------- config
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 
 # Разделы, доступ к которым можно выдавать обычным пользователям.
 GRANTABLE_SECTIONS = ["equip", "people", "acts", "cart", "sup", "tsd"]
@@ -1406,6 +1406,195 @@ def export_xlsx(db: Session = Depends(get_db), u: User = Depends(current_user)):
     return Response(buf.getvalue(),
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+
+# ---------- массовая загрузка техники из XLSX ----------
+# Один лист = один тип техники (по названию листа), одна строка = одна единица
+# с данными сотрудника (создаётся/находится по логину → e-mail → ФИО).
+XLSX_SHEET_TYPE = {
+    "телефоны": "Телефон", "телефон": "Телефон", "смартфоны": "Телефон",
+    "ноутбуки": "Ноутбук", "ноутбук": "Ноутбук",
+    "пк": "ПК", "компьютеры": "ПК", "десктопы": "ПК",
+    "мониторы": "Монитор", "монитор": "Монитор",
+    "планшеты": "Планшет", "планшет": "Планшет",
+    "аксессуары": "Аксессуар", "аксессуар": "Аксессуар",
+}
+
+# Заголовок столбца (нижний регистр, без лишних пробелов) -> внутренний ключ.
+XLSX_HEADERS = {
+    "логин": "login", "login": "login",
+    "имя": "first", "фамилия": "last", "отчество": "middle",
+    "фио": "fio", "сотрудник": "fio",
+    "e-mail": "email", "email": "email", "почта": "email", "e_mail": "email",
+    "внутреннее наименование": "inner", "внутр. наименование": "inner", "внутренее наименование": "inner",
+    "наименование": "name", "модель": "name", "наименование / модель": "name",
+    "серийный номер": "serial", "серийный №": "serial", "s/n": "serial", "sn": "serial", "серийник": "serial",
+    "заказ": "order", "номер заказа": "order", "№ заказа": "order",
+    "дата покупки": "pdate", "дата": "pdate",
+    "заказ / дата покупки": "purchase", "номер заказа / дата покупки": "purchase",
+    "поставщик": "supplier", "поставщики": "supplier",
+    "кто выдал": "issued_by", "выдал": "issued_by",
+    "цена": "cost", "стоимость": "cost", "стоимость, руб.": "cost",
+    "локация": "location", "город": "location", "локация / город": "location",
+    "тип": "type", "статус": "status", "примечание": "note",
+}
+
+
+def _xlsx_cell(v):
+    """Значение ячейки -> строка; даты форматируем как дд.мм.гггг."""
+    if v is None:
+        return ""
+    if isinstance(v, (datetime.datetime, datetime.date)):
+        return v.strftime("%d.%m.%Y")
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
+
+
+def _sheet_type(title: str) -> str:
+    t = (title or "").strip()
+    return XLSX_SHEET_TYPE.get(t.lower(), t if t in {"ПК", "Ноутбук", "Монитор", "Телефон",
+                                                      "Планшет", "Аксессуар", "Прочее"} else "Прочее")
+
+
+@app.post("/api/import/equipment-xlsx")
+def import_equipment_xlsx(body: dict, db: Session = Depends(get_db), u: User = Depends(current_user)):
+    """Добавить технику из XLSX по шаблону (дополняет базу, не заменяет).
+    Сотрудники и поставщики создаются при необходимости; дубли сотрудников
+    не плодятся — поиск по логину, затем e-mail, затем ФИО."""
+    import openpyxl
+    raw = body.get("dataB64") or ""
+    if "," in raw and raw.strip().startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    try:
+        data = base64.b64decode(raw)
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    except Exception:
+        raise HTTPException(400, "Не удалось прочитать XLSX-файл")
+
+    # индексы существующих сотрудников/поставщиков
+    emps = db.scalars(select(Employee)).all()
+    by_login = {e.login.strip().lower(): e for e in emps if e.login}
+    by_email = {e.email.strip().lower(): e for e in emps if e.email}
+    by_fio = {e.full_name.strip().lower(): e for e in emps if e.full_name}
+    sups = db.scalars(select(Supplier)).all()
+    by_sup = {s.name.strip().lower(): s for s in sups if s.name}
+
+    n_eq = n_emp = n_sup = 0
+    errors = []
+
+    def get_supplier(name):
+        nonlocal n_sup
+        key = name.strip().lower()
+        if not key:
+            return None
+        s = by_sup.get(key)
+        if not s:
+            s = Supplier(id="sup-" + secrets.token_hex(5), name=name.strip())
+            db.add(s); db.flush(); by_sup[key] = s; n_sup += 1
+        return s
+
+    def get_employee(row):
+        nonlocal n_emp
+        login = row.get("login", ""); email = row.get("email", "")
+        last = row.get("last", ""); first = row.get("first", ""); middle = row.get("middle", "")
+        if not any([last, first, middle]) and row.get("fio"):
+            last, first, middle = split_fio(row["fio"])
+        if not any([login, email, last, first, middle]):
+            return None  # строки без сотрудника -> техника на склад
+        e = (by_login.get(login.lower()) if login else None) \
+            or (by_email.get(email.lower()) if email else None) \
+            or (by_fio.get(join_fio(last, first, middle).lower()) if (last or first or middle) else None)
+        if e:
+            return e
+        e = Employee(id="emp-" + secrets.token_hex(5), last_name=last, first_name=first,
+                     middle_name=middle, full_name=join_fio(last, first, middle),
+                     login=login, email=email)
+        db.add(e); db.flush()
+        n_emp += 1
+        if login: by_login[login.lower()] = e
+        if email: by_email[email.lower()] = e
+        if e.full_name: by_fio[e.full_name.lower()] = e
+        return e
+
+    for ws in wb.worksheets:
+        rows = ws.iter_rows(values_only=True)
+        try:
+            header = next(rows)
+        except StopIteration:
+            continue
+        cols = {}  # индекс столбца -> ключ
+        for i, h in enumerate(header):
+            key = XLSX_HEADERS.get(_xlsx_cell(h).lower())
+            if key:
+                cols[i] = key
+        if "name" not in cols.values():
+            errors.append(f"Лист «{ws.title}»: не найден столбец НАИМЕНОВАНИЕ — пропущен")
+            continue
+        sheet_type = _sheet_type(ws.title)
+        rnum = 1
+        for raw_row in rows:
+            rnum += 1
+            row = {}
+            for i, key in cols.items():
+                if i < len(raw_row):
+                    row[key] = _xlsx_cell(raw_row[i])
+            if not any(row.values()):
+                continue
+            name = row.get("name", "")
+            if not name:
+                errors.append(f"«{ws.title}», строка {rnum}: пустое наименование — пропущена")
+                continue
+            emp = get_employee(row)
+            sup = get_supplier(row.get("supplier", "")) if row.get("supplier") else None
+            purchase = row.get("purchase", "")
+            if not purchase:
+                order = row.get("order", ""); pdate = row.get("pdate", "")
+                purchase = f"{order} от {pdate}" if order and pdate else (order or pdate)
+            note = row.get("note", "")
+            if row.get("issued_by"):
+                note = (note + "; " if note else "") + "Выдал: " + row["issued_by"]
+            q = Equipment(
+                id="eq-" + secrets.token_hex(5),
+                type=(row.get("type") or sheet_type),
+                name=name, inner_name=row.get("inner", ""), serial=row.get("serial", ""),
+                purchase=purchase, cost=row.get("cost", ""), location=row.get("location", ""),
+                note=note, invno=_next_inv(db),
+                supplier_id=sup.id if sup else None,
+            )
+            if emp:
+                q.emp_id = emp.id; q.assign_type = "employee"; q.status = "issued"
+            else:
+                q.status = "stock"
+            db.add(q)
+            n_eq += 1
+
+    db.commit()
+    return {"equipment": n_eq, "employees": n_emp, "suppliers": n_sup, "errors": errors}
+
+
+@app.get("/api/import/equipment-template.xlsx")
+def import_template(db: Session = Depends(get_db), u: User = Depends(current_user)):
+    """Пустой шаблон для массовой загрузки техники."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    headers = ["Логин", "Имя", "Фамилия", "Отчество", "E-Mail", "Внутреннее наименование",
+               "НАИМЕНОВАНИЕ", "Серийный номер", "Заказ", "Дата покупки", "Поставщики",
+               "Кто выдал", "Цена", "Локация"]
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Телефоны"
+    ws.append(headers)
+    for c in ws[1]:
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="2563EB")
+        c.alignment = Alignment(vertical="center", wrap_text=True)
+    ws.freeze_panes = "A2"
+    for i, w in enumerate([16, 14, 16, 16, 24, 26, 26, 18, 16, 14, 18, 18, 12, 16], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    buf = io.BytesIO(); wb.save(buf)
+    return Response(buf.getvalue(),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="shablon-zagruzki.xlsx"'})
+
 
 @app.post("/api/wipe")
 def wipe(body: dict, db: Session = Depends(get_db), u: User = Depends(current_user)):
